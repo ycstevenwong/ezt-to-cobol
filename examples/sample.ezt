@@ -1,0 +1,36 @@
+* ============================================================
+* Sample Easytrieve Plus program
+* Reads a customer file, prints active customers, totals balance
+* ============================================================
+
+FILE CUSTFILE DISK 80
+CUSTNO    1   5   N
+CUSTNAME  6  30   A
+BALANCE  36  10   P 2
+STATUS   46   1   A
+REGION   47   2   A
+
+FILE RPTFILE  DISK 133
+
+DEFINE WS-TOTAL-BALANCE  N 12 VALUE 0
+DEFINE WS-RECORD-COUNT   N  5 VALUE 0
+DEFINE WS-ACTIVE-COUNT   N  5 VALUE 0
+
+JOB INPUT CUSTFILE OUTPUT RPTFILE
+
+  ADD 1 TO WS-RECORD-COUNT
+
+  IF STATUS EQ 'A'
+    ADD BALANCE TO WS-TOTAL-BALANCE
+    ADD 1 TO WS-ACTIVE-COUNT
+    DISPLAY CUSTNO CUSTNAME BALANCE
+    WRITE RPTFILE
+  END-IF
+
+END-JOB
+
+REPORT CUSTRPT
+  TITLE 'CUSTOMER BALANCE REPORT'
+  CONTROL REGION
+  PRINT CUSTNO CUSTNAME BALANCE STATUS
+END-REPORT

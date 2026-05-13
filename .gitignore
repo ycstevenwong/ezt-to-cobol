@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ezt-to-cobol project
+*.cbl
+*.cobol
+.DS_Store
