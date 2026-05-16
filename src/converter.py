@@ -9,7 +9,6 @@ from src.prompts import (
     FIELD_DEF_PROMPT,
     JOB_PROMPT,
     REPORT_PROMPT,
-    MACRO_PROMPT,
 )
 
 DEFAULT_MODEL = "llama3.2"
@@ -21,7 +20,6 @@ _PROMPT_FOR_TYPE = {
     SectionType.FIELD_DEF: FIELD_DEF_PROMPT,
     SectionType.JOB: JOB_PROMPT,
     SectionType.REPORT: REPORT_PROMPT,
-    SectionType.MACRO: MACRO_PROMPT,
 }
 
 

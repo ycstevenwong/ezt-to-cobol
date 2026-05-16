@@ -8,7 +8,6 @@ from typing import List, Optional, Tuple
 class SectionType(Enum):
     FILE_DEF = "file_definitions"
     FIELD_DEF = "field_definitions"
-    MACRO = "macro"
     JOB = "job"
     REPORT = "report"
 
@@ -24,7 +23,7 @@ class EZTSection:
 # Encountering any of these while inside a block signals the block has ended,
 # even if no explicit END-* keyword was present.
 _SECTION_STARTERS = re.compile(
-    r"^\s*(FILE|JOB|REPORT|MACRO|PARM)\b", re.IGNORECASE
+    r"^\s*(FILE|JOB|REPORT|PARM)\b", re.IGNORECASE
 )
 
 
@@ -54,13 +53,6 @@ def parse_ezt(source: str) -> List[EZTSection]:
         if first == "FILE":
             file_lines.append(line)
             i += 1
-
-        elif first == "MACRO":
-            _flush_preamble(sections, file_lines, field_lines)
-            file_lines, field_lines = [], []
-            macro_name = tokens[1] if len(tokens) > 1 else f"MACRO_{i}"
-            block, i = _collect_block(lines, i, end_pattern=r"^\s*(ENDMACRO|END-MACRO)\b")
-            sections.append(EZTSection(SectionType.MACRO, macro_name, "\n".join(block)))
 
         elif first == "JOB":
             _flush_preamble(sections, file_lines, field_lines)

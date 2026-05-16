@@ -1,0 +1,43 @@
+data_types:
+  N: "PIC 9({len})"
+  A: "PIC X({len})"
+  P: "PIC S9({int})V9({dec}) COMP-3   # int = len minus decimal places, dec = decimal places"
+  B: "PIC S9({len}) COMP"
+
+file_organization:
+  DISK: "ORGANIZATION IS SEQUENTIAL"
+  TAPE: "ORGANIZATION IS SEQUENTIAL"
+  VSAM: "ORGANIZATION IS INDEXED"
+
+conditions:
+  EQ: "="
+  NE: "NOT ="
+  GT: ">"
+  LT: "<"
+  GE: ">="
+  LE: "<="
+  FOUND: "condition true after a successful READ/SEARCH (no AT END triggered)"
+  NOTFOUND: "AT END branch of READ, or NOT FOUND after SEARCH"
+  EOF: "AT END clause of READ statement"
+
+statements:
+  DISPLAY:   "DISPLAY {args}"
+  MOVE:      "MOVE {src} TO {dest}"
+  ADD:       "ADD {val} TO {field}"
+  SUBTRACT:  "SUBTRACT {val} FROM {field}"
+  MULTIPLY:  "MULTIPLY {val} BY {field}"
+  DIVIDE:    "DIVIDE {val} INTO {field}"
+  COMPUTE:   "COMPUTE {result} = {expr}"
+  PERFORM:   "PERFORM {paragraph}"
+  GO_TO:     "GO TO {label}"
+  STOP:      "STOP RUN"
+  READ:      "READ {file} NEXT RECORD AT END MOVE 'Y' TO WS-{FILE}-EOF END-READ"
+  WRITE:     "WRITE {record-name} FROM {ws-area}"
+  REWRITE:   "REWRITE {record-name} FROM {ws-area}"
+
+control_flow:
+  IF:       "IF {cond} ... END-IF"
+  ELSE:     "ELSE"
+  DO_WHILE: "PERFORM UNTIL NOT ({cond}) ... END-PERFORM"
+  DO_UNTIL: "PERFORM UNTIL {cond} ... END-PERFORM"
+  DOEND:    "END-PERFORM"

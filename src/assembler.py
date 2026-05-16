@@ -123,9 +123,6 @@ def assemble(
             if proc:
                 procedure_parts.append(proc)
 
-        elif section.type == SectionType.MACRO:
-            procedure_parts.append(cobol)
-
     # Build each division
     ident = _IDENT_DIV.format(program_id=program_name[:8].upper())
 
