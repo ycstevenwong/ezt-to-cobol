@@ -23,13 +23,28 @@ data_types:
     example: "CTR 34 4 B  ->  FILE-CTR PIC S9(4) COMP   [occupies positions 34-37]"
 
 field_definitions:
-  syntax: "fieldname  start-col  length  type  [decimal-places]"
+  syntax: "fieldname  start-col|*  length  type  [decimal-places]   (* = immediately after previous field)"
+
+  star_position:
+    description: |
+      When start-col is *, the field starts immediately after the previous field ends.
+      Resolve * to an actual start-col before doing any overlap/REDEFINES analysis:
+        resolved-start = previous-field-start + previous-field-physical-bytes
+      For P (packed) type, remember physical-bytes = ceil((len + 1) / 2), not len.
+    example: |
+      EZT:
+        CUSTNO    1   5  N      <- start=1,  end=5
+        CUSTNAME  *  30  A      <- * -> start=6,  end=35
+        BALANCE   *  10  P 2   <- * -> start=36, end=41 (6 bytes packed)
+        STATUS    *   1  A      <- * -> start=42, end=42
+      Treat exactly the same as if explicit positions had been written.
 
   file_fields:
     description: |
       Fields defined immediately after a FILE statement belong to that file's record.
       start-col and length define the field's byte position in the physical record.
-      Use these positions to build the COBOL record layout and detect REDEFINES.
+      Resolve any * start-cols first, then use positions to build the COBOL layout
+      and detect REDEFINES.
 
     sequential_rule: |
       If fields are non-overlapping and listed in ascending start-col order,
