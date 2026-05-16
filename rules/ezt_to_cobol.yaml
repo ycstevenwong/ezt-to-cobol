@@ -1,8 +1,94 @@
 data_types:
-  N: "PIC 9({len})"
-  A: "PIC X({len})"
-  P: "PIC S9({int})V9({dec}) COMP-3   # int = len minus decimal places, dec = decimal places"
-  B: "PIC S9({len}) COMP"
+  N:
+    cobol: "PIC 9({len})"
+    note: "Unsigned numeric display; len = number of digits"
+    physical_bytes: "{len}"
+    example: "VAR1 1 3 N  ->  CUSTFILE-VAR1 PIC 9(3)   [occupies positions 1-3]"
+  A:
+    cobol: "PIC X({len})"
+    note: "Alphanumeric; len = number of characters"
+    physical_bytes: "{len}"
+    example: "NAME 4 20 A  ->  CUSTFILE-NAME PIC X(20)  [occupies positions 4-23]"
+  P:
+    cobol: "PIC S9({int})V9({dec}) COMP-3"
+    note: |
+      Packed decimal. len = total digits, dec = decimal places declared, int = len - dec.
+      Physical byte length = ceil((len + 1) / 2) — use this for position arithmetic.
+    physical_bytes: "ceil((len + 1) / 2)"
+    example: "AMT 24 10 P 2  ->  FILE-AMT PIC S9(8)V9(2) COMP-3  [10 digits, 2 decimal, 6 bytes]"
+  B:
+    cobol: "PIC S9({len}) COMP"
+    note: "Binary fullword or halfword; len = bytes (typically 2 or 4)"
+    physical_bytes: "{len}"
+    example: "CTR 34 4 B  ->  FILE-CTR PIC S9(4) COMP   [occupies positions 34-37]"
+
+field_definitions:
+  syntax: "fieldname  start-col  length  type  [decimal-places]"
+
+  file_fields:
+    description: |
+      Fields defined immediately after a FILE statement belong to that file's record.
+      start-col and length define the field's byte position in the physical record.
+      Use these positions to build the COBOL record layout and detect REDEFINES.
+
+    sequential_rule: |
+      If fields are non-overlapping and listed in ascending start-col order,
+      generate them as sequential 05-level items inside the 01 record.
+      Example:
+        EZT:
+          CUSTNO    1   5  N
+          CUSTNAME  6  30  A
+          BALANCE  36  10  P 2
+          STATUS   46   1  A
+        COBOL:
+          01  CUSTFILE-REC.
+              05  CUSTFILE-CUSTNO    PIC 9(5).
+              05  CUSTFILE-CUSTNAME  PIC X(30).
+              05  CUSTFILE-BALANCE   PIC S9(8)V9(2) COMP-3.
+              05  CUSTFILE-STATUS    PIC X(1).
+
+    redefines_rule: |
+      If a field's start-col falls within the byte range of a field already defined,
+      that field REDEFINES the overlapping base field.
+
+      Algorithm:
+        1. Sort all file fields by start-col.
+        2. For each field, compute its end-col = start-col + physical-bytes - 1.
+        3. If start-col <= end-col of the most recently established base field,
+           the new field overlaps -> it belongs to a REDEFINES group.
+        4. Group overlapping fields under a named 05-level REDEFINES item.
+        5. Fields that resume after the base field ends are sequential again.
+
+      Example:
+        EZT:
+          RECTYPE   1   1  A      <- positions 1-1
+          PAYLOAD   2  79  A      <- positions 2-80  (base field for REDEFINES below)
+          A-CODE    2   5  N      <- starts at 2, inside PAYLOAD -> REDEFINES
+          A-NAME    7  25  A      <- continues inside PAYLOAD
+          B-AMT     2  10  P 2   <- starts at 2 again -> another REDEFINES of PAYLOAD
+        COBOL:
+          01  FILE-REC.
+              05  FILE-RECTYPE    PIC X(1).
+              05  FILE-PAYLOAD    PIC X(79).
+              05  FILE-TYPE-A REDEFINES FILE-PAYLOAD.
+                  10  FILE-A-CODE PIC 9(5).
+                  10  FILE-A-NAME PIC X(25).
+              05  FILE-TYPE-B REDEFINES FILE-PAYLOAD.
+                  10  FILE-B-AMT  PIC S9(8)V9(2) COMP-3.
+
+  ws_fields:
+    description: |
+      Fields defined with DEFINE (outside FILE sections) are standalone
+      WORKING-STORAGE items. They have no start-col / position concept and
+      never generate REDEFINES.
+    syntax: "DEFINE varname  type  length  [VALUE literal]"
+    example: |
+      EZT:
+        DEFINE WS-COUNT N 5 VALUE 0
+        DEFINE WS-FLAG  A 1 VALUE 'N'
+      COBOL:
+        01  WS-COUNT  PIC 9(5)   VALUE ZERO.
+        01  WS-FLAG   PIC X(1)   VALUE 'N'.
 
 file_organization:
   DISK: "ORGANIZATION IS SEQUENTIAL"
