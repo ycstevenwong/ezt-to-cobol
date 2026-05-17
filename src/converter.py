@@ -1,23 +1,18 @@
-"""Orchestrate Ollama API calls to convert EZT sections to COBOL."""
+"""Orchestrate EZT-to-COBOL conversion: rule-based for structure, AI for logic."""
 from openai import OpenAI
 from typing import Dict, List
 
 from src.parser import EZTSection, SectionType
-from src.prompts import (
-    SYSTEM_PROMPT,
-    FILE_DEF_PROMPT,
-    FIELD_DEF_PROMPT,
-    JOB_PROMPT,
-    REPORT_PROMPT,
-)
+from src.prompts import SYSTEM_PROMPT, JOB_PROMPT, REPORT_PROMPT
+from src.rule_converter import convert_file_def, convert_field_def
 
 DEFAULT_MODEL = "llama3.2"
 DEFAULT_BASE_URL = "http://localhost:11434/v1"
 MAX_TOKENS = 8192
 
+_RULE_BASED = {SectionType.FILE_DEF, SectionType.FIELD_DEF}
+
 _PROMPT_FOR_TYPE = {
-    SectionType.FILE_DEF: FILE_DEF_PROMPT,
-    SectionType.FIELD_DEF: FIELD_DEF_PROMPT,
     SectionType.JOB: JOB_PROMPT,
     SectionType.REPORT: REPORT_PROMPT,
 }
@@ -75,16 +70,30 @@ def convert_section(
 def convert_all(
     client: OpenAI,
     sections: List[EZTSection],
+    source: str,
     model: str = DEFAULT_MODEL,
     verbose: bool = False,
 ) -> Dict[str, str]:
-    """Convert every EZT section, accumulating context for each subsequent call."""
+    """Convert every EZT section.
+
+    FILE_DEF and FIELD_DEF are converted deterministically via rule_converter.
+    JOB and REPORT sections are sent to the LLM with accumulated context.
+    """
     results: Dict[str, str] = {}
     context_chunks: List[str] = []
 
     for section in sections:
-        context = "\n\n".join(context_chunks)
-        cobol = convert_section(client, section, context, model=model, verbose=verbose)
+        if section.type in _RULE_BASED:
+            if section.type == SectionType.FILE_DEF:
+                cobol = convert_file_def(source)
+            else:
+                cobol = convert_field_def(section.content)
+            if verbose:
+                print(f"  → [{section.type.value}] {section.name} (rule-based)", flush=True)
+        else:
+            context = "\n\n".join(context_chunks)
+            cobol = convert_section(client, section, context, model=model, verbose=verbose)
+
         key = _section_key(section)
         results[key] = cobol
         context_chunks.append(f"=== {section.type.value.upper()} ({section.name}) ===\n{cobol}")

@@ -37,8 +37,8 @@ def _split_file_def(cobol: str) -> Tuple[str, str]:
     fs_match = fs_marker.search(cobol)
 
     if fc_match and fs_match:
-        fc_text = cobol[fc_match.end(): fs_match.start()].strip()
-        fs_text = cobol[fs_match.end():].strip()
+        fc_text = cobol[fc_match.end(): fs_match.start()].strip()   # no indent; assembler adds 11
+        fs_text = cobol[fs_match.end():].strip('\n')                 # preserve COBOL indentation
         return fc_text, fs_text
 
     # Fallback: heuristic split — SELECT lines → FILE-CONTROL, FD lines → FILE SECTION
@@ -74,8 +74,8 @@ def _split_report(cobol: str) -> Tuple[str, str]:
 
 
 def _strip_division_header(cobol: str, header_pattern: str) -> str:
-    """Remove a division/section header line if Claude included it."""
-    return re.sub(header_pattern, "", cobol, flags=re.IGNORECASE | re.MULTILINE).strip()
+    """Remove a division/section header line if the model included it."""
+    return re.sub(header_pattern, "", cobol, flags=re.IGNORECASE | re.MULTILINE).strip('\n')
 
 
 def assemble(
@@ -92,7 +92,7 @@ def assemble(
 
     for section in sections:
         key = _section_key(section)
-        cobol = converted.get(key, "").strip()
+        cobol = converted.get(key, "").strip('\n')
         if not cobol:
             continue
 

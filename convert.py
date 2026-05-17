@@ -84,7 +84,7 @@ def main(input_file, output, model, base_url, program_name, verbose, dry_run):
     click.echo(f"\nConverting with model '{model}' at {base_url} ...", err=True)
     client = make_client(base_url)
     try:
-        converted = convert_all(client, sections, model=model, verbose=verbose)
+        converted = convert_all(client, sections, source, model=model, verbose=verbose)
     except APIConnectionError:
         click.echo(
             f"Cannot connect to Ollama at {base_url}. "
