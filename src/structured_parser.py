@@ -47,7 +47,7 @@ class Preamble:
     defines: List[EZTDefine] = field(default_factory=list)
 
 
-_SECTION_BREAK = re.compile(r"^\s*(JOB|REPORT|PARM)\b", re.IGNORECASE)
+_SECTION_BREAK = re.compile(r"^\s*(JOB|REPORT)\b", re.IGNORECASE)
 _COMMENT = re.compile(r"^\s*(\*|//)")
 
 
@@ -97,6 +97,9 @@ def parse_preamble(source: str) -> Preamble:
         if not tokens:
             continue
         first = tokens[0].upper()
+
+        if first == "PARM":
+            continue  # PARM lines are not part of the record/WS layout — skip
 
         if first == "FILE":
             if len(tokens) < 3:

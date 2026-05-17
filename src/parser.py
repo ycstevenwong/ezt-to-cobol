@@ -23,7 +23,7 @@ class EZTSection:
 # Encountering any of these while inside a block signals the block has ended,
 # even if no explicit END-* keyword was present.
 _SECTION_STARTERS = re.compile(
-    r"^\s*(FILE|JOB|REPORT|PARM)\b", re.IGNORECASE
+    r"^\s*(FILE|JOB|REPORT)\b", re.IGNORECASE
 )
 
 
@@ -66,6 +66,9 @@ def parse_ezt(source: str) -> List[EZTSection]:
             report_name = tokens[1] if len(tokens) > 1 else f"REPORT_{i}"
             block, i = _collect_block(lines, i, end_pattern=r"^\s*(END-REPORT|ENDREPORT)\b")
             sections.append(EZTSection(SectionType.REPORT, report_name, "\n".join(block)))
+
+        elif first == "PARM":
+            i += 1  # PARM lines are not converted — skip silently
 
         else:
             field_lines.append(line)
