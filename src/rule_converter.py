@@ -91,8 +91,8 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
         f = node.field
         fname = f.name[:30]
 
-        if node.children and depth == 1:
-            # Two-item REDEFINES: raw field then structured REDEFINES
+        if node.children and depth == 2:
+            # Two-item REDEFINES at level 10: raw field then structured REDEFINES
             lines.append(_field_line(prefix, fname, _pic(f.type, f.length, f.decimals)))
             redef_name = (f.name + "-FIELDS")[:30]
             lines.append(f"{prefix}{redef_name} REDEFINES {fname}.")
@@ -120,8 +120,10 @@ def _record_layout(file: EZTFile) -> List[str]:
         return [f"{_A}01  {file.name}-REC."]
 
     if len(roots) == 1 and roots[0].children:
-        # Single enclosing field with sub-fields → two-01 structure:
-        # first 01 holds the raw field; second 01 REDEFINES it with the hierarchy.
+        # Single enclosing field with sub-fields → single 01, two-05 structure:
+        #   05 ROOT-FULL   PIC X(n).
+        #   05 FILE-FIELDS REDEFINES ROOT-FULL.
+        #      10 ...
         root = roots[0]
         root_name = root.field.name[:30]
         full_name = (root.field.name + "-FULL")[:30]
@@ -130,9 +132,9 @@ def _record_layout(file: EZTFile) -> List[str]:
         lines = [
             f"{_A}01  {root_name}.",
             _field_line(f"{_B}05  ", full_name, pic),
-            f"{_A}01  {redef_name}.",
+            f"{_B}05  {redef_name} REDEFINES {full_name}.",
         ]
-        lines.extend(_render_subtree(root.children, 1, root.field.start, root.field.end))
+        lines.extend(_render_subtree(root.children, 2, root.field.start, root.field.end))
         return lines
 
     # Multiple roots or a single leaf → standard single-01 sequential layout.
