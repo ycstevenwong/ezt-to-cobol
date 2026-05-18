@@ -1,13 +1,12 @@
 """Rule-based COBOL generator for FILE_DEF and FIELD_DEF sections."""
 from dataclasses import dataclass
-from typing import List, Union
+from typing import List, Optional
 
 from src.structured_parser import EZTDefine, EZTField, EZTFile, parse_preamble
 
 # COBOL area indentation
 _A = " " * 7   # Area A (col 8)  — FD, 01-level
 _B = " " * 11  # Area B (col 12) — 05-level, FD clauses
-_C = " " * 15  # col 16          — 10-level (inside REDEFINES)
 
 
 # ── PIC generation ─────────────────────────────────────────────────────────────
@@ -26,115 +25,99 @@ def _pic(ftype: str, length: int, decimals: int) -> str:
     return f"PIC X({length})"
 
 
-# ── REDEFINES detection ─────────────────────────────────────────────────────────
+# ── Containment tree ────────────────────────────────────────────────────────────
 
 @dataclass
-class _Simple:
-    f: EZTField
+class _TreeNode:
+    field: EZTField
+    children: List['_TreeNode']
 
 
-@dataclass
-class _Redefines:
-    base: EZTField
-    groups: List[List[EZTField]]  # each inner list is one REDEFINES alternative
+def _build_tree(fields: List[EZTField]) -> List[_TreeNode]:
+    """Build a containment tree from EZT fields sorted by position.
 
-
-def _detect_layout(fields: List[EZTField]) -> List[Union[_Simple, _Redefines]]:
-    """Group fields into sequential items and REDEFINES groups using source order.
-
-    Processes fields in the order they appear in the EZT source (not sorted by
-    position).  A field whose start-col falls within the byte range of the last
-    sequential field is treated as a REDEFINES of that field.  A new REDEFINES
-    alternative starts whenever the start-col goes backward past the running
-    end-position of the current alternative.
+    Field B becomes a child of A when A's byte range fully contains B's range.
+    The most specific (smallest) enclosing field is used as the parent.
     """
     if not fields:
         return []
+    sorted_fields = sorted(fields, key=lambda f: (f.start, -f.end))
+    nodes = [_TreeNode(field=f, children=[]) for f in sorted_fields]
+    roots: List[_TreeNode] = []
+    stack: List[_TreeNode] = []  # ancestor chain, most specific on top
 
-    result: List[Union[_Simple, _Redefines]] = []
-    seq_end = 0          # byte-end of the last top-level sequential field
-    current_base: Optional[EZTField] = None
-    current_groups: List[List[EZTField]] = []
-    current_group: List[EZTField] = []
-    group_pos = 0        # running end within the current REDEFINES alternative
-
-    def _flush() -> None:
-        nonlocal current_base, current_groups, current_group, group_pos
-        if current_group:
-            current_groups.append(current_group)
-        if current_base is not None:
-            result.append(_Redefines(base=current_base, groups=current_groups))
-        current_base, current_groups, current_group, group_pos = None, [], [], 0
-
-    for f in fields:
-        if f.start > seq_end:
-            # Non-overlapping — sequential field
-            _flush()
-            result.append(_Simple(f))
-            seq_end = f.end
+    for node in nodes:
+        while stack and stack[-1].field.end < node.field.end:
+            stack.pop()
+        if stack:
+            stack[-1].children.append(node)
         else:
-            # Overlaps with seq_end → REDEFINES
-            if current_base is None:
-                # Promote the last sequential field to REDEFINES base
-                if result and isinstance(result[-1], _Simple):
-                    current_base = result.pop().f
-                    group_pos = current_base.start
-                else:
-                    # No explicit base field — add field sequentially and move on
-                    result.append(_Simple(f))
-                    seq_end = max(seq_end, f.end)
-                    continue
+            roots.append(node)
+        stack.append(node)
 
-            if f.start < group_pos and current_group:
-                # Start goes backward → new REDEFINES alternative
-                current_groups.append(current_group)
-                current_group = [f]
-                group_pos = f.start + f.physical_bytes
-            else:
-                current_group.append(f)
-                group_pos = max(group_pos, f.start + f.physical_bytes)
-
-    _flush()
-    return result
+    return roots
 
 
-# ── Naming helpers ─────────────────────────────────────────────────────────────
+def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> List[str]:
+    """Render sibling nodes at the given depth, inserting FILLER for byte gaps.
 
-def _prefix(file_name: str) -> str:
-    """Short prefix for COBOL field names derived from the file name."""
-    name = file_name.upper()
-    if name.endswith("FILE"):
-        name = name[:-4]
-    return (name[:4] + "-") if name else "F-"
+    depth — 1-based level multiplier (depth 1 → level 05, depth 2 → level 10, …)
+    cur   — first absolute byte position expected at this depth (1-based)
+    end   — last byte of the enclosing parent (for trailing FILLER)
+    """
+    indent = " " * (7 + depth * 4)   # 11 spaces at depth=1 (05-level)
+    lvl = f"{depth * 5:02d}"
+    lines = []
 
+    for node in nodes:
+        gap = node.field.start - cur
+        if gap > 0:
+            lines.append(f"{indent}{lvl}  {'FILLER':<33} PIC X({gap}).")
+        f = node.field
+        fname = f.name[:30]
+        if node.children:
+            lines.append(f"{indent}{lvl}  {fname}.")
+            lines.extend(_render_subtree(
+                node.children, depth + 1, f.start, f.end
+            ))
+        else:
+            pic = _pic(f.type, f.length, f.decimals)
+            lines.append(f"{indent}{lvl}  {fname:<33} {pic}.")
+        cur = f.end + 1
 
-def _cname(file_name: str, field_name: str) -> str:
-    return (_prefix(file_name) + field_name.upper())[:30]
+    trailing = end - cur + 1
+    if trailing > 0:
+        lines.append(f"{indent}{lvl}  {'FILLER':<33} PIC X({trailing}).")
+    return lines
 
 
 # ── Record layout ───────────────────────────────────────────────────────────────
 
 def _record_layout(file: EZTFile) -> List[str]:
+    roots = _build_tree(file.fields)
+    if not roots:
+        return [f"{_A}01  {file.name}-REC."]
+
+    if len(roots) == 1 and roots[0].children:
+        # Single enclosing field with sub-fields → two-01 structure:
+        # first 01 holds the raw field; second 01 REDEFINES it with the hierarchy.
+        root = roots[0]
+        root_name = root.field.name[:30]
+        full_name = (root.field.name + "-FULL")[:30]
+        redef_name = (file.name + "-FIELDS")[:30]
+        pic = _pic(root.field.type, root.field.length, root.field.decimals)
+        lines = [
+            f"{_A}01  {root_name}.",
+            f"{_B}05  {full_name:<33} {pic}.",
+            f"{_A}01  {redef_name} REDEFINES {root_name}.",
+        ]
+        lines.extend(_render_subtree(root.children, 1, root.field.start, root.field.end))
+        return lines
+
+    # Multiple roots or a single leaf → standard single-01 sequential layout.
+    rec_end = file.rec_length or (roots[-1].field.end if roots else 0)
     lines = [f"{_A}01  {file.name}-REC."]
-    layout = _detect_layout(file.fields)
-
-    for item in layout:
-        if isinstance(item, _Simple):
-            f = item.f
-            cname = _cname(file.name, f.name)
-            lines.append(f"{_B}05  {cname:<33} {_pic(f.type, f.length, f.decimals)}.")
-
-        elif isinstance(item, _Redefines):
-            base = item.base
-            base_cname = _cname(file.name, base.name)
-            lines.append(f"{_B}05  {base_cname:<33} {_pic(base.type, base.length, base.decimals)}.")
-            for group in item.groups:
-                if group:
-                    grp_name = (_cname(file.name, group[0].name) + "-GRP")[:30]
-                    lines.append(f"{_B}05  {grp_name:<33} REDEFINES {base_cname}.")
-                    for f in group:
-                        cname = _cname(file.name, f.name)
-                        lines.append(f"{_C}10  {cname:<33} {_pic(f.type, f.length, f.decimals)}.")
+    lines.extend(_render_subtree(roots, 1, 1, rec_end))
     return lines
 
 
