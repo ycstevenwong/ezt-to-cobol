@@ -130,7 +130,7 @@ def _record_layout(file: EZTFile) -> List[str]:
         lines = [
             f"{_A}01  {root_name}.",
             _field_line(f"{_B}05  ", full_name, pic),
-            f"{_A}01  {redef_name} REDEFINES {root_name}.",
+            f"{_A}01  {redef_name}.",
         ]
         lines.extend(_render_subtree(root.children, 1, root.field.start, root.field.end))
         return lines
