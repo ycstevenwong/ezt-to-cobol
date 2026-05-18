@@ -66,6 +66,31 @@ def _build_tree(fields: List[EZTField]) -> List[_TreeNode]:
     return roots
 
 
+def _flatten_same_start_chain(node: _TreeNode) -> Optional[List[_TreeNode]]:
+    """Return the list of REDEFINES alternatives when node's children form a
+    same-start chain (each link has exactly one child that starts at the same
+    absolute position as node).  Returns None otherwise.
+
+    Example: CARD-START → CARD-START-10 → CARD-START-9 → CARD-START-6
+    all start at position 17, so all three become direct REDEFINES of CARD-START.
+    Returned list is sorted by field length ascending (shortest first).
+    """
+    if not node.children:
+        return None
+    chain: List[_TreeNode] = []
+    cur = node
+    while cur.children:
+        if len(cur.children) != 1:
+            return None  # multiple children → decomposition, not alternatives
+        child = cur.children[0]
+        if child.field.start != node.field.start:
+            return None  # child at a different position → not a same-start chain
+        chain.append(child)
+        cur = child
+    chain.sort(key=lambda n: n.field.end)
+    return chain
+
+
 def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> List[str]:
     """Render sibling nodes at the given depth, inserting FILLER for byte gaps.
 
@@ -73,11 +98,16 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
     cur   — first absolute byte position expected at this depth (1-based)
     end   — last byte of the enclosing parent (for trailing FILLER)
 
-    At depth 1, a node with children gets a two-item REDEFINES pattern:
-      05  NAME          PIC X(n).          ← raw field
-      05  NAME-FIELDS   REDEFINES NAME.    ← structured breakdown
-          10  ...
-    Deeper nodes with children are rendered as plain group items (no extra REDEFINES).
+    Same-start chain (e.g. CARD-START / CARD-START-6 / CARD-START-9):
+      10  CARD-START                    PIC 9(16).
+      10  CARD-START-6 REDEFINES CARD-START  PIC 9(6).
+      …
+
+    Depth-2 decomposition group (e.g. CRANGE-KEY / CRANGE-ORG / CRANGE-TYPE):
+      10  CRANGE-KEY                    PIC 9(6).
+      10  CRANGE-KEY-FIELDS REDEFINES CRANGE-KEY.
+          15  CRANGE-ORG                PIC 9(3).
+          15  CRANGE-TYPE               PIC 9(3).
     """
     indent = " " * (7 + depth * 4)   # 11 spaces at depth=1 (05-level)
     lvl = f"{depth * 5:02d}"
@@ -91,14 +121,22 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
         f = node.field
         fname = f.name[:30]
 
-        if node.children and depth == 2:
-            # Two-item REDEFINES at level 10: raw field then structured REDEFINES
+        same_start = _flatten_same_start_chain(node)
+        if same_start is not None:
+            # Same-start alternatives: base field + one REDEFINES per alternative
+            lines.append(_field_line(prefix, fname, _pic(f.type, f.length, f.decimals)))
+            for alt in same_start:
+                alt_name = alt.field.name[:30]
+                alt_pic = _pic(alt.field.type, alt.field.length, alt.field.decimals)
+                lines.append(f"{prefix}{alt_name} REDEFINES {fname}  {alt_pic}.")
+        elif node.children and depth == 2:
+            # Decomposition group at level 10: raw field + named REDEFINES with sub-fields
             lines.append(_field_line(prefix, fname, _pic(f.type, f.length, f.decimals)))
             redef_name = (f.name + "-FIELDS")[:30]
             lines.append(f"{prefix}{redef_name} REDEFINES {fname}.")
             lines.extend(_render_subtree(node.children, depth + 1, f.start, f.end))
         elif node.children:
-            # Deeper group: plain group item, no additional REDEFINES
+            # Plain group (deeper than level 10)
             lines.append(f"{prefix}{fname}.")
             lines.extend(_render_subtree(node.children, depth + 1, f.start, f.end))
         else:
