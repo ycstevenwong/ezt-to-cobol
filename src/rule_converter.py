@@ -123,12 +123,29 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
 
         same_start = _flatten_same_start_chain(node)
         if same_start is not None:
-            # Same-start alternatives: base field + one REDEFINES per alternative
+            # Base field
             lines.append(_field_line(prefix, fname, _pic(f.type, f.length, f.decimals)))
+            # Each alternative: a named REDEFINES group containing the field + FILLER
+            child_indent = " " * (7 + (depth + 1) * 4)
+            child_lvl = f"{(depth + 1) * 5:02d}"
+            child_prefix = f"{child_indent}{child_lvl}  "
             for alt in same_start:
-                alt_name = alt.field.name[:30]
-                alt_pic = _pic(alt.field.type, alt.field.length, alt.field.decimals)
-                lines.append(f"{prefix}{alt_name} REDEFINES {fname}  {alt_pic}.")
+                af = alt.field
+                alt_name = af.name[:30]
+                # Group name: {base}-FIELDS-{suffix}, where suffix is the part of
+                # the alternative name after the base name (e.g. "6" from CARD-START-6)
+                if af.name.upper().startswith(f.name.upper() + "-"):
+                    suffix = af.name[len(f.name) + 1:]
+                else:
+                    suffix = af.name
+                grp_name = (f.name + "-FIELDS-" + suffix)[:30]
+                lines.append(f"{prefix}{grp_name} REDEFINES {fname}.")
+                lines.append(_field_line(child_prefix, alt_name,
+                                         _pic(af.type, af.length, af.decimals)))
+                filler_bytes = f.physical_bytes - af.physical_bytes
+                if filler_bytes > 0:
+                    lines.append(_field_line(child_prefix, "FILLER",
+                                             f"PIC X({filler_bytes})"))
         elif node.children and depth == 2:
             # Decomposition group at level 10: raw field + named REDEFINES with sub-fields
             lines.append(_field_line(prefix, fname, _pic(f.type, f.length, f.decimals)))
