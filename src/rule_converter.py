@@ -8,6 +8,14 @@ from src.structured_parser import EZTDefine, EZTField, EZTFile, parse_preamble
 _A = " " * 7   # Area A (col 8)  — FD, 01-level
 _B = " " * 11  # Area B (col 12) — 05-level, FD clauses
 
+_PIC_COL = 49  # target 0-indexed column for the PIC keyword (consistent across all depths)
+
+
+def _field_line(prefix: str, name: str, pic: str) -> str:
+    """Return a COBOL data-item line with PIC aligned to _PIC_COL."""
+    name_width = max(_PIC_COL - len(prefix) - 1, len(name))
+    return f"{prefix}{name:<{name_width}} {pic}."
+
 
 # ── PIC generation ─────────────────────────────────────────────────────────────
 
@@ -64,30 +72,43 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
     depth — 1-based level multiplier (depth 1 → level 05, depth 2 → level 10, …)
     cur   — first absolute byte position expected at this depth (1-based)
     end   — last byte of the enclosing parent (for trailing FILLER)
+
+    At depth 1, a node with children gets a two-item REDEFINES pattern:
+      05  NAME          PIC X(n).          ← raw field
+      05  NAME-FIELDS   REDEFINES NAME.    ← structured breakdown
+          10  ...
+    Deeper nodes with children are rendered as plain group items (no extra REDEFINES).
     """
     indent = " " * (7 + depth * 4)   # 11 spaces at depth=1 (05-level)
     lvl = f"{depth * 5:02d}"
+    prefix = f"{indent}{lvl}  "
     lines = []
 
     for node in nodes:
         gap = node.field.start - cur
         if gap > 0:
-            lines.append(f"{indent}{lvl}  {'FILLER':<33} PIC X({gap}).")
+            lines.append(_field_line(prefix, "FILLER", f"PIC X({gap})"))
         f = node.field
         fname = f.name[:30]
-        if node.children:
-            lines.append(f"{indent}{lvl}  {fname}.")
-            lines.extend(_render_subtree(
-                node.children, depth + 1, f.start, f.end
-            ))
+
+        if node.children and depth == 1:
+            # Two-item REDEFINES: raw field then structured REDEFINES
+            lines.append(_field_line(prefix, fname, _pic(f.type, f.length, f.decimals)))
+            redef_name = (f.name + "-FIELDS")[:30]
+            lines.append(f"{prefix}{redef_name} REDEFINES {fname}.")
+            lines.extend(_render_subtree(node.children, depth + 1, f.start, f.end))
+        elif node.children:
+            # Deeper group: plain group item, no additional REDEFINES
+            lines.append(f"{prefix}{fname}.")
+            lines.extend(_render_subtree(node.children, depth + 1, f.start, f.end))
         else:
-            pic = _pic(f.type, f.length, f.decimals)
-            lines.append(f"{indent}{lvl}  {fname:<33} {pic}.")
+            lines.append(_field_line(prefix, fname, _pic(f.type, f.length, f.decimals)))
+
         cur = f.end + 1
 
     trailing = end - cur + 1
     if trailing > 0:
-        lines.append(f"{indent}{lvl}  {'FILLER':<33} PIC X({trailing}).")
+        lines.append(_field_line(prefix, "FILLER", f"PIC X({trailing})"))
     return lines
 
 
@@ -108,7 +129,7 @@ def _record_layout(file: EZTFile) -> List[str]:
         pic = _pic(root.field.type, root.field.length, root.field.decimals)
         lines = [
             f"{_A}01  {root_name}.",
-            f"{_B}05  {full_name:<33} {pic}.",
+            _field_line(f"{_B}05  ", full_name, pic),
             f"{_A}01  {redef_name} REDEFINES {root_name}.",
         ]
         lines.extend(_render_subtree(root.children, 1, root.field.start, root.field.end))
