@@ -113,9 +113,13 @@ def assemble(
             ws_extra, proc = _split_report(cobol)
             if ws_extra:
                 ws_parts.append(ws_extra)
-            clean_proc = _strip_division_header(
-                proc, r"^\s*PROCEDURE DIVISION[\w\s]*\.\s*$"
+            # Take only what comes after PROCEDURE DIVISION header, discarding
+            # any DATA DIVISION content the LLM may have emitted before it.
+            proc_m = re.search(
+                r"^\s*PROCEDURE DIVISION[\w\s]*\.\s*$", proc,
+                re.IGNORECASE | re.MULTILINE,
             )
+            clean_proc = proc[proc_m.end():].strip("\n") if proc_m else proc.strip("\n")
             if clean_proc:
                 procedure_parts.append(clean_proc)
 

@@ -128,6 +128,9 @@ Output ONLY the PROCEDURE DIVISION content (starting with "       PROCEDURE DIVI
 including all paragraphs: OPEN/CLOSE, READ loop, processing logic, and STOP RUN. \
 No explanations.
 
+IMPORTANT: Do NOT output WORKING-STORAGE SECTION or any data declarations (01-level items, \
+REDEFINES, etc.). The DATA DIVISION is already complete — output executable statements only.
+
 Prior converted context (DATA DIVISION already generated):
 {context}
 
