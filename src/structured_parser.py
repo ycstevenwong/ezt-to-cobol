@@ -55,6 +55,37 @@ def _blank_or_comment(line: str) -> bool:
     return not line.strip() or bool(_COMMENT.match(line))
 
 
+def _parse_ws_field(tokens: List[str]) -> Optional[EZTDefine]:
+    """Parse a standalone WS field: name type length [decimals] [VALUE literal].
+
+    Distinguishable from a file field because token[1] is a type letter (N/A/P/B),
+    not a start-column number or *.
+    """
+    if len(tokens) < 3:
+        return None
+    ftype = tokens[1].upper()
+    if ftype not in ("N", "A", "P", "B"):
+        return None
+    try:
+        length = int(tokens[2])
+    except ValueError:
+        return None
+    name = tokens[0].upper()
+    decimals = 0
+    value = None
+    i = 3
+    while i < len(tokens):
+        if tokens[i].upper() == "VALUE" and i + 1 < len(tokens):
+            value = tokens[i + 1].strip("'\"")
+            i += 2
+        elif tokens[i].isdigit():
+            decimals = int(tokens[i])
+            i += 1
+        else:
+            i += 1
+    return EZTDefine(name=name, type=ftype, length=length, decimals=decimals, value=value)
+
+
 def _parse_field(tokens: List[str], prev_end: int) -> Optional[EZTField]:
     if len(tokens) < 4:
         return None
@@ -78,11 +109,11 @@ def _parse_field(tokens: List[str], prev_end: int) -> Optional[EZTField]:
 
 
 def parse_preamble(source: str) -> Preamble:
-    """Parse FILE definitions (with their record fields) and DEFINE variables.
+    """Parse FILE definitions (with their record fields) and DEFINE/standalone WS variables.
 
     Associates field definition lines with whichever FILE statement preceded them.
-    A DEFINE statement breaks the file association — subsequent fields that are not
-    DEFINE statements are treated as orphaned and ignored.
+    Once that association is broken (by DEFINE or end of FILE block), lines that
+    match the standalone WS pattern (name type length) are added to defines.
     """
     result = Preamble()
     current_file: Optional[EZTFile] = None
@@ -141,5 +172,10 @@ def parse_preamble(source: str) -> Preamble:
             if f:
                 current_file.fields.append(f)
                 prev_end = f.end
+
+        else:
+            ws = _parse_ws_field(tokens)
+            if ws:
+                result.defines.append(ws)
 
     return result

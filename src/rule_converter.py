@@ -271,32 +271,9 @@ def convert_file_def(source: str) -> str:
 
 
 def convert_field_def(field_def_content: str) -> str:
-    """Generate WORKING-STORAGE entries from DEFINE statements in FIELD_DEF content."""
-    defines: List[EZTDefine] = []
-    for line in field_def_content.splitlines():
-        tokens = line.strip().split()
-        if not tokens or tokens[0].upper() != "DEFINE":
-            continue
-        if len(tokens) < 4:
-            continue
-        name = tokens[1].upper()
-        ftype = tokens[2].upper()
-        try:
-            length = int(tokens[3])
-        except ValueError:
-            continue
-        decimals = 0
-        value = None
-        i = 4
-        while i < len(tokens):
-            if tokens[i].upper() == "VALUE" and i + 1 < len(tokens):
-                value = tokens[i + 1].strip("'\"")
-                i += 2
-            elif tokens[i].isdigit():
-                decimals = int(tokens[i])
-                i += 1
-            else:
-                i += 1
-        defines.append(EZTDefine(name=name, type=ftype, length=length,
-                                  decimals=decimals, value=value))
-    return gen_working_storage(defines)
+    """Generate WORKING-STORAGE entries from FIELD_DEF content.
+
+    Handles both DEFINE statements and standalone WS fields (name type length).
+    """
+    preamble = parse_preamble(field_def_content)
+    return gen_working_storage(preamble.defines)
