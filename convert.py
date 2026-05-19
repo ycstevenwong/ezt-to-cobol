@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI entry point: convert an Easytrieve program to COBOL via Ollama."""
+"""CLI entry point: convert Easytrieve program(s) to COBOL via Ollama."""
 import sys
 from pathlib import Path
 
@@ -11,13 +11,75 @@ from src.converter import convert_all, make_client, DEFAULT_MODEL, DEFAULT_BASE_
 from src.assembler import assemble
 
 
+def _convert_one(
+    input_file: Path,
+    output: Path,
+    client,
+    model: str,
+    program_name: str | None,
+    verbose: bool,
+    dry_run: bool,
+) -> bool:
+    """Convert a single EZT file. Returns True on success."""
+    try:
+        source = input_file.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        click.echo(f"Error reading {input_file}: {exc}", err=True)
+        return False
+
+    sections = parse_ezt(source)
+    if not sections:
+        click.echo(f"No recognisable EZT sections in {input_file.name} — skipped.", err=True)
+        return False
+
+    click.echo(f"\n{input_file.name}: {len(sections)} section(s)", err=True)
+    for s in sections:
+        click.echo(
+            f"  {s.type.value:<20} name={s.name!r:<25} "
+            f"({len(s.content.splitlines())} lines)",
+            err=True,
+        )
+
+    if dry_run:
+        return True
+
+    prog_name = program_name or input_file.stem[:8].upper()
+
+    try:
+        converted = convert_all(client, sections, source, model=model, verbose=verbose)
+    except APIConnectionError:
+        click.echo(
+            f"Cannot connect to Ollama. Make sure Ollama is running (`ollama serve`).",
+            err=True,
+        )
+        return False
+    except APIStatusError as exc:
+        click.echo(f"API error {exc.status_code}: {exc.message}", err=True)
+        return False
+
+    cobol = assemble(sections, converted, program_name=prog_name)
+
+    if output:
+        try:
+            output.write_text(cobol, encoding="utf-8")
+            click.echo(f"  → wrote {len(cobol.splitlines())} lines to {output}", err=True)
+        except OSError as exc:
+            click.echo(f"Error writing {output}: {exc}", err=True)
+            return False
+    else:
+        click.echo(cobol)
+
+    return True
+
+
 @click.command()
-@click.argument("input_file", type=click.Path(exists=True, path_type=Path))
+@click.argument("input_files", nargs=-1, required=True,
+                type=click.Path(exists=True, path_type=Path))
 @click.option(
-    "-o", "--output",
+    "-o", "--output-dir",
     type=click.Path(path_type=Path),
     default=None,
-    help="Output COBOL file path (default: stdout)",
+    help="Output directory for .cbl files (default: same folder as each input).",
 )
 @click.option(
     "--model",
@@ -34,81 +96,51 @@ from src.assembler import assemble
 @click.option(
     "--program-name",
     default=None,
-    help="COBOL PROGRAM-ID (default: derived from input filename)",
+    help="COBOL PROGRAM-ID (only used when converting a single file).",
 )
-@click.option(
-    "-v", "--verbose",
-    is_flag=True,
-    help="Stream section-by-section output to stderr",
-)
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    help="Parse and show detected sections; do not call the model",
-)
-def main(input_file, output, model, base_url, program_name, verbose, dry_run):
-    """Convert an Easytrieve (EZT) program to COBOL using a local Ollama model.
+@click.option("-v", "--verbose", is_flag=True,
+              help="Stream section-by-section output to stderr.")
+@click.option("--dry-run", is_flag=True,
+              help="Parse and show detected sections; do not call the model.")
+def main(input_files, output_dir, model, base_url, program_name, verbose, dry_run):
+    """Convert one or more Easytrieve (.ezt) programs to COBOL.
 
-    INPUT_FILE: path to the .ezt source file.
+    INPUT_FILES: one or more .ezt source files.
+
+    Each file is written to <name>.cbl in OUTPUT_DIR (or the same folder as
+    the input if --output-dir is not given).  Use stdout by omitting
+    --output-dir only when converting a single file without -o.
 
     Requires Ollama running at BASE_URL (default: http://localhost:11434).
     """
-    # Read source
-    try:
-        source = input_file.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        click.echo(f"Error reading {input_file}: {exc}", err=True)
-        sys.exit(1)
+    if output_dir:
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Parse
-    sections = parse_ezt(source)
-    if not sections:
-        click.echo("No recognisable EZT sections found in the input file.", err=True)
-        sys.exit(1)
-
-    click.echo(f"Parsed {len(sections)} section(s) from {input_file.name}:", err=True)
-    for s in sections:
-        click.echo(
-            f"  {s.type.value:<20} name={s.name!r:<25} "
-            f"({len(s.content.splitlines())} lines)",
-            err=True,
-        )
-
-    if dry_run:
-        return
-
-    # Derive program name
-    prog_name = program_name or input_file.stem[:8].upper()
-
-    # Convert
-    click.echo(f"\nConverting with model '{model}' at {base_url} ...", err=True)
     client = make_client(base_url)
-    try:
-        converted = convert_all(client, sections, source, model=model, verbose=verbose)
-    except APIConnectionError:
-        click.echo(
-            f"Cannot connect to Ollama at {base_url}. "
-            "Make sure Ollama is running (`ollama serve`).",
-            err=True,
+    ok = failed = 0
+
+    for input_file in input_files:
+        if output_dir:
+            out = output_dir / (input_file.stem + ".cbl")
+        elif len(input_files) == 1:
+            out = None          # single file → stdout (unless -o given)
+        else:
+            out = input_file.with_suffix(".cbl")
+
+        success = _convert_one(
+            input_file, out, client, model,
+            program_name if len(input_files) == 1 else None,
+            verbose, dry_run,
         )
-        sys.exit(1)
-    except APIStatusError as exc:
-        click.echo(f"API error {exc.status_code}: {exc.message}", err=True)
-        sys.exit(1)
+        if success:
+            ok += 1
+        else:
+            failed += 1
 
-    # Assemble
-    cobol = assemble(sections, converted, program_name=prog_name)
-
-    # Emit
-    if output:
-        try:
-            output.write_text(cobol, encoding="utf-8")
-            click.echo(f"\nWrote {len(cobol.splitlines())} lines to {output}", err=True)
-        except OSError as exc:
-            click.echo(f"Error writing {output}: {exc}", err=True)
+    if len(input_files) > 1:
+        click.echo(f"\nDone: {ok} succeeded, {failed} failed.", err=True)
+        if failed:
             sys.exit(1)
-    else:
-        click.echo(cobol)
 
 
 if __name__ == "__main__":
