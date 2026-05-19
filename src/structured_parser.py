@@ -2,7 +2,7 @@
 import math
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 @dataclass
@@ -108,6 +108,25 @@ def _parse_field(tokens: List[str], prev_end: int) -> Optional[EZTField]:
         except ValueError:
             return None
     return EZTField(name=name, start=start, length=length, type=ftype, decimals=decimals)
+
+
+def scan_ws_fields(content: str) -> Tuple[List[EZTDefine], str]:
+    """Scan arbitrary content for W-marker WS field declarations.
+
+    Returns (defines, cleaned_content) where cleaned_content has the W-field
+    lines removed.  Used to hoist inline WS declarations out of JOB/REPORT blocks.
+    """
+    defines: List[EZTDefine] = []
+    clean_lines: List[str] = []
+    for line in content.splitlines():
+        tokens = line.strip().split()
+        if len(tokens) > 1 and tokens[1].upper() == "W":
+            ws = _parse_ws_field(tokens)
+            if ws:
+                defines.append(ws)
+                continue
+        clean_lines.append(line)
+    return defines, "\n".join(clean_lines)
 
 
 def parse_preamble(source: str) -> Preamble:

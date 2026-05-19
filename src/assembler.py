@@ -110,11 +110,14 @@ def assemble(
             ws_parts.append(clean)
 
         elif section.type == SectionType.JOB:
-            # Remove PROCEDURE DIVISION header if Claude included it (we add it ourselves)
-            clean = _strip_division_header(
-                cobol, r"^\s*PROCEDURE DIVISION[\w\s]*\.\s*$"
+            ws_extra, proc = _split_report(cobol)
+            if ws_extra:
+                ws_parts.append(ws_extra)
+            clean_proc = _strip_division_header(
+                proc, r"^\s*PROCEDURE DIVISION[\w\s]*\.\s*$"
             )
-            procedure_parts.append(clean)
+            if clean_proc:
+                procedure_parts.append(clean_proc)
 
         elif section.type == SectionType.REPORT:
             ws_extra, proc = _split_report(cobol)

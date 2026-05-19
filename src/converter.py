@@ -4,7 +4,9 @@ from typing import Dict, List
 
 from src.parser import EZTSection, SectionType
 from src.prompts import SYSTEM_PROMPT, JOB_PROMPT, REPORT_PROMPT
-from src.rule_converter import convert_file_def, convert_field_def
+import dataclasses
+
+from src.rule_converter import convert_file_def, convert_field_def, hoist_ws_fields
 
 DEFAULT_MODEL = "llama3.2"
 DEFAULT_BASE_URL = "http://localhost:11434/v1"
@@ -92,7 +94,13 @@ def convert_all(
                 print(f"  → [{section.type.value}] {section.name} (rule-based)", flush=True)
         else:
             context = "\n\n".join(context_chunks)
-            cobol = convert_section(client, section, context, model=model, verbose=verbose)
+            clean_content, ws_cobol = hoist_ws_fields(section.content)
+            clean_section = dataclasses.replace(section, content=clean_content)
+            proc_cobol = convert_section(client, clean_section, context, model=model, verbose=verbose)
+            if ws_cobol:
+                cobol = f"--- WORKING-STORAGE ---\n{ws_cobol}\n--- PROCEDURE ---\n{proc_cobol}"
+            else:
+                cobol = proc_cobol
 
         key = _section_key(section)
         results[key] = cobol
