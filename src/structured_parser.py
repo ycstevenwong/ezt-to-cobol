@@ -55,6 +55,31 @@ def _blank_or_comment(line: str) -> bool:
     return not line.strip() or bool(_COMMENT.match(line))
 
 
+def _parse_define(tokens: List[str]) -> Optional[EZTDefine]:
+    """Parse a DEFINE statement: DEFINE name type length [decimals] [VALUE literal]."""
+    if len(tokens) < 4 or tokens[0].upper() != "DEFINE":
+        return None
+    name = tokens[1].upper()
+    ftype = tokens[2].upper()
+    try:
+        length = int(tokens[3])
+    except ValueError:
+        return None
+    decimals = 0
+    value = None
+    i = 4
+    while i < len(tokens):
+        if tokens[i].upper() == "VALUE" and i + 1 < len(tokens):
+            value = tokens[i + 1].strip("'\"")
+            i += 2
+        elif tokens[i].isdigit():
+            decimals = int(tokens[i])
+            i += 1
+        else:
+            i += 1
+    return EZTDefine(name=name, type=ftype, length=length, decimals=decimals, value=value)
+
+
 def _parse_ws_field(tokens: List[str]) -> Optional[EZTDefine]:
     """Parse a standalone WS field: name W length type [decimals] [VALUE literal].
 
@@ -111,20 +136,27 @@ def _parse_field(tokens: List[str], prev_end: int) -> Optional[EZTField]:
 
 
 def scan_ws_fields(content: str) -> Tuple[List[EZTDefine], str]:
-    """Scan arbitrary content for W-marker WS field declarations.
+    """Scan arbitrary content for WS field declarations and strip them out.
 
-    Returns (defines, cleaned_content) where cleaned_content has the W-field
-    lines removed.  Used to hoist inline WS declarations out of JOB/REPORT blocks.
+    Recognises both DEFINE statements and W-marker fields so that all WS
+    declarations inside JOB/REPORT blocks are handled by Python, not the LLM.
+    Returns (defines, cleaned_content_with_ws_lines_removed).
     """
     defines: List[EZTDefine] = []
     clean_lines: List[str] = []
     for line in content.splitlines():
         tokens = line.strip().split()
-        if len(tokens) > 1 and tokens[1].upper() == "W":
-            ws = _parse_ws_field(tokens)
-            if ws:
-                defines.append(ws)
-                continue
+        if not tokens:
+            clean_lines.append(line)
+            continue
+        d = _parse_define(tokens)
+        if d:
+            defines.append(d)
+            continue
+        ws = _parse_ws_field(tokens)
+        if ws:
+            defines.append(ws)
+            continue
         clean_lines.append(line)
     return defines, "\n".join(clean_lines)
 
@@ -164,29 +196,9 @@ def parse_preamble(source: str) -> Preamble:
 
         elif first == "DEFINE":
             current_file = None  # DEFINE ends the current file's field association
-            if len(tokens) < 4:
-                continue
-            name = tokens[1].upper()
-            ftype = tokens[2].upper()
-            try:
-                length = int(tokens[3])
-            except ValueError:
-                continue
-            decimals = 0
-            value = None
-            i = 4
-            while i < len(tokens):
-                if tokens[i].upper() == "VALUE" and i + 1 < len(tokens):
-                    value = tokens[i + 1].strip("'\"")
-                    i += 2
-                elif tokens[i].isdigit():
-                    decimals = int(tokens[i])
-                    i += 1
-                else:
-                    i += 1
-            result.defines.append(
-                EZTDefine(name=name, type=ftype, length=length, decimals=decimals, value=value)
-            )
+            d = _parse_define(tokens)
+            if d:
+                result.defines.append(d)
 
         elif len(tokens) > 1 and tokens[1].upper() == "W":
             current_file = None  # W field breaks file association
