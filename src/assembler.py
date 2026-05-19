@@ -175,7 +175,40 @@ def assemble(
     proc_body = "\n\n".join(procedure_parts) if procedure_parts else "       STOP RUN."
     procedure_div = "       PROCEDURE DIVISION.\n" + proc_body
 
-    return "\n\n".join([ident, env_div, data_div, procedure_div]) + "\n"
+    cobol = "\n\n".join([ident, env_div, data_div, procedure_div]) + "\n"
+    return _enforce_col_limit(cobol)
+
+
+# ── Column-72 enforcement ────────────────────────────────────────────────────
+#
+# COBOL fixed format: columns 1-6 sequence, 7 indicator, 8-72 code, 73-80 id.
+# Any line longer than 72 chars must be continued:
+#   - current line ends at or before col 72
+#   - next line has '-' in col 7, content resumes in Area B (col 12)
+
+_MAX_COL = 72
+_CONT_PREFIX = " " * 6 + "-" + " " * 4   # cols 1-6 blank, col 7 '-', cols 8-11 blank
+
+
+def _wrap_line(line: str) -> List[str]:
+    """Wrap a single line to fit within _MAX_COL using COBOL continuation."""
+    if len(line) <= _MAX_COL:
+        return [line]
+    # Prefer to break at a space so we don't split a token
+    break_at = line.rfind(" ", 7, _MAX_COL)
+    if break_at <= 6:           # no usable space — force hard break
+        break_at = _MAX_COL
+    first = line[:break_at]
+    rest = line[break_at:].lstrip(" ")
+    return [first] + _wrap_line(_CONT_PREFIX + rest)
+
+
+def _enforce_col_limit(cobol: str) -> str:
+    """Wrap every line that exceeds column 72."""
+    lines: List[str] = []
+    for line in cobol.splitlines():
+        lines.extend(_wrap_line(line))
+    return "\n".join(lines) + "\n"
 
 
 def _indent(text: str, spaces: int) -> str:
