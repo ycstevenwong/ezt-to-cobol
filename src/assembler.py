@@ -78,6 +78,28 @@ def _strip_division_header(cobol: str, header_pattern: str) -> str:
     return re.sub(header_pattern, "", cobol, flags=re.IGNORECASE | re.MULTILINE).strip('\n')
 
 
+_DATA_ITEM_RE = re.compile(r"^\s*\d{2}\s+\w", re.MULTILINE)
+_DATA_SECTION_RE = re.compile(
+    r"^\s*(?:WORKING-STORAGE|FILE|LINKAGE|LOCAL-STORAGE)\s+SECTION\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _strip_data_decls(cobol: str) -> str:
+    """Remove data-item declarations and section headers from procedure code.
+
+    The LLM occasionally reproduces WS declarations it saw in context.
+    Level-number lines (01 NAME PIC ...) and section headers are never
+    valid inside PROCEDURE DIVISION.
+    """
+    lines = []
+    for line in cobol.splitlines():
+        if _DATA_ITEM_RE.match(line) or _DATA_SECTION_RE.match(line):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def assemble(
     sections: List[EZTSection],
     converted: Dict[str, str],
@@ -110,16 +132,13 @@ def assemble(
             ws_parts.append(clean)
 
         elif section.type == SectionType.JOB:
-            ws_extra, proc = _split_report(cobol)
-            if ws_extra:
-                ws_parts.append(ws_extra)
             # Take only what comes after PROCEDURE DIVISION header, discarding
             # any DATA DIVISION content the LLM may have emitted before it.
             proc_m = re.search(
-                r"^\s*PROCEDURE DIVISION[\w\s]*\.\s*$", proc,
+                r"^\s*PROCEDURE DIVISION[\w\s]*\.\s*$", cobol,
                 re.IGNORECASE | re.MULTILINE,
             )
-            clean_proc = proc[proc_m.end():].strip("\n") if proc_m else proc.strip("\n")
+            clean_proc = cobol[proc_m.end():].strip("\n") if proc_m else cobol.strip("\n")
             if clean_proc:
                 procedure_parts.append(clean_proc)
 
