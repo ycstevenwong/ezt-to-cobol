@@ -252,6 +252,23 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
         else:
             val_clause = ""
         lines.append(f"{_A}01  {d.name:<33} {pic_str}{val_clause}.")
+
+        if d.subfields:
+            redef_name = (d.name + "-FIELDS")[:30]
+            lines.append(f"{_A}01  {redef_name} REDEFINES {d.name}.")
+            cur = 1
+            for sf in sorted(d.subfields, key=lambda s: s.start):
+                gap = sf.start - cur
+                if gap > 0:
+                    lines.append(_field_line(f"{_B}05  ", "FILLER", f"PIC X({gap})"))
+                lines.append(_field_line(
+                    f"{_B}05  ", sf.name[:30], _pic(sf.type, sf.length, sf.decimals)
+                ))
+                cur = sf.end + 1
+            trailing = d.physical_bytes - cur + 1
+            if trailing > 0:
+                lines.append(_field_line(f"{_B}05  ", "FILLER", f"PIC X({trailing})"))
+
     return "\n".join(lines)
 
 

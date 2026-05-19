@@ -33,12 +33,38 @@ class EZTFile:
 
 
 @dataclass
+class EZTWSSubfield:
+    name: str
+    start: int    # 1-based byte position within the parent field
+    length: int
+    type: str     # N, A, P, B
+    decimals: int = 0
+
+    @property
+    def physical_bytes(self) -> int:
+        if self.type.upper() == "P":
+            return math.ceil((self.length + 1) / 2)
+        return self.length
+
+    @property
+    def end(self) -> int:
+        return self.start + self.physical_bytes - 1
+
+
+@dataclass
 class EZTDefine:
     name: str
     type: str
     length: int
     decimals: int = 0
     value: Optional[str] = None
+    subfields: List[EZTWSSubfield] = field(default_factory=list)
+
+    @property
+    def physical_bytes(self) -> int:
+        if self.type.upper() == "P":
+            return math.ceil((self.length + 1) / 2)
+        return self.length
 
 
 @dataclass
@@ -113,6 +139,59 @@ def _parse_ws_field(tokens: List[str]) -> Optional[EZTDefine]:
     return EZTDefine(name=name, type=ftype, length=length, decimals=decimals, value=value)
 
 
+def _parse_ws_subfield(tokens: List[str], prev_end: int) -> Optional[EZTWSSubfield]:
+    """Parse a WS sub-field referencing a parent WS field.
+
+    Two forms (tokens[1] is the parent name, verified by caller):
+      name parent  length  type  [decimals]   — no offset; starts right after prev_end
+      name parent +N       length type [dec]  — +N is 0-based offset from parent start
+                                                so start = N + 1 (1-based)
+    Example:
+      WS-HH  WS-SYSTIME  2 N      → start=1, length=2
+      FILE1  WS-SYSTIME +2 1 A    → start=3, length=1
+    """
+    if len(tokens) < 4:
+        return None
+    name = tokens[0].upper()
+    offset_tok = tokens[2]
+
+    if offset_tok.startswith("+"):
+        try:
+            offset = int(offset_tok[1:])
+        except ValueError:
+            return None
+        start = offset + 1          # 0-based offset → 1-based position
+        if len(tokens) < 5:
+            return None
+        try:
+            length = int(tokens[3])
+        except ValueError:
+            return None
+        ftype = tokens[4].upper() if len(tokens) > 4 else ""
+        dec_idx = 5
+    else:
+        start = prev_end + 1 if prev_end > 0 else 1
+        try:
+            length = int(offset_tok)
+        except ValueError:
+            return None
+        ftype = tokens[3].upper() if len(tokens) > 3 else ""
+        dec_idx = 4
+
+    if ftype not in ("N", "A", "P", "B"):
+        return None
+
+    decimals = 0
+    i = dec_idx
+    while i < len(tokens):
+        if tokens[i].isdigit():
+            decimals = int(tokens[i])
+            break
+        i += 1
+
+    return EZTWSSubfield(name=name, start=start, length=length, type=ftype, decimals=decimals)
+
+
 def _parse_field(tokens: List[str], prev_end: int) -> Optional[EZTField]:
     if len(tokens) < 4:
         return None
@@ -138,26 +217,45 @@ def _parse_field(tokens: List[str], prev_end: int) -> Optional[EZTField]:
 def scan_ws_fields(content: str) -> Tuple[List[EZTDefine], str]:
     """Scan arbitrary content for WS field declarations and strip them out.
 
-    Recognises both DEFINE statements and W-marker fields so that all WS
-    declarations inside JOB/REPORT blocks are handled by Python, not the LLM.
+    Recognises DEFINE statements, W-marker fields, and their sub-fields so that
+    all WS declarations inside JOB/REPORT blocks are handled by Python, not the LLM.
     Returns (defines, cleaned_content_with_ws_lines_removed).
     """
     defines: List[EZTDefine] = []
+    ws_by_name: dict = {}   # name -> EZTDefine, for sub-field parent lookup
+    ws_sub_end: dict = {}   # parent_name -> last sub-field end position
     clean_lines: List[str] = []
+
     for line in content.splitlines():
         tokens = line.strip().split()
         if not tokens:
             clean_lines.append(line)
             continue
+
         d = _parse_define(tokens)
         if d:
             defines.append(d)
+            ws_by_name[d.name] = d
+            ws_sub_end[d.name] = 0
             continue
+
         ws = _parse_ws_field(tokens)
         if ws:
             defines.append(ws)
+            ws_by_name[ws.name] = ws
+            ws_sub_end[ws.name] = 0
             continue
+
+        if len(tokens) > 1 and tokens[1].upper() in ws_by_name:
+            parent_name = tokens[1].upper()
+            sf = _parse_ws_subfield(tokens, ws_sub_end.get(parent_name, 0))
+            if sf:
+                ws_by_name[parent_name].subfields.append(sf)
+                ws_sub_end[parent_name] = sf.end
+                continue
+
         clean_lines.append(line)
+
     return defines, "\n".join(clean_lines)
 
 
@@ -171,6 +269,8 @@ def parse_preamble(source: str) -> Preamble:
     result = Preamble()
     current_file: Optional[EZTFile] = None
     prev_end = 0
+    ws_by_name: dict = {}   # name -> EZTDefine, for sub-field parent lookup
+    ws_sub_end: dict = {}   # parent_name -> last sub-field end position
 
     for line in source.splitlines():
         if _blank_or_comment(line):
@@ -195,16 +295,27 @@ def parse_preamble(source: str) -> Preamble:
             prev_end = 0
 
         elif first == "DEFINE":
-            current_file = None  # DEFINE ends the current file's field association
+            current_file = None
             d = _parse_define(tokens)
             if d:
                 result.defines.append(d)
+                ws_by_name[d.name] = d
+                ws_sub_end[d.name] = 0
 
         elif len(tokens) > 1 and tokens[1].upper() == "W":
-            current_file = None  # W field breaks file association
+            current_file = None
             ws = _parse_ws_field(tokens)
             if ws:
                 result.defines.append(ws)
+                ws_by_name[ws.name] = ws
+                ws_sub_end[ws.name] = 0
+
+        elif len(tokens) > 1 and tokens[1].upper() in ws_by_name:
+            parent_name = tokens[1].upper()
+            sf = _parse_ws_subfield(tokens, ws_sub_end.get(parent_name, 0))
+            if sf:
+                ws_by_name[parent_name].subfields.append(sf)
+                ws_sub_end[parent_name] = sf.end
 
         elif current_file is not None:
             f = _parse_field(tokens, prev_end)
