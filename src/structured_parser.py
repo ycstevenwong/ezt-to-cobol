@@ -56,24 +56,26 @@ def _blank_or_comment(line: str) -> bool:
 
 
 def _parse_ws_field(tokens: List[str]) -> Optional[EZTDefine]:
-    """Parse a standalone WS field: name type length [decimals] [VALUE literal].
+    """Parse a standalone WS field: name W length type [decimals] [VALUE literal].
 
-    Distinguishable from a file field because token[1] is a type letter (N/A/P/B),
-    not a start-column number or *.
+    W in position 1 is the working-storage marker, replacing the start column
+    used by file fields.  Example: SALARY W 4 P 2
     """
-    if len(tokens) < 3:
+    if len(tokens) < 4:
         return None
-    ftype = tokens[1].upper()
-    if ftype not in ("N", "A", "P", "B"):
+    if tokens[1].upper() != "W":
         return None
     try:
         length = int(tokens[2])
     except ValueError:
         return None
+    ftype = tokens[3].upper()
+    if ftype not in ("N", "A", "P", "B"):
+        return None
     name = tokens[0].upper()
     decimals = 0
     value = None
-    i = 3
+    i = 4
     while i < len(tokens):
         if tokens[i].upper() == "VALUE" and i + 1 < len(tokens):
             value = tokens[i + 1].strip("'\"")
@@ -112,8 +114,8 @@ def parse_preamble(source: str) -> Preamble:
     """Parse FILE definitions (with their record fields) and DEFINE/standalone WS variables.
 
     Associates field definition lines with whichever FILE statement preceded them.
-    Once that association is broken (by DEFINE or end of FILE block), lines that
-    match the standalone WS pattern (name type length) are added to defines.
+    A DEFINE or a W-marker field (name W length type) breaks the file association;
+    subsequent W fields are added to defines as working-storage entries.
     """
     result = Preamble()
     current_file: Optional[EZTFile] = None
@@ -167,15 +169,16 @@ def parse_preamble(source: str) -> Preamble:
                 EZTDefine(name=name, type=ftype, length=length, decimals=decimals, value=value)
             )
 
+        elif len(tokens) > 1 and tokens[1].upper() == "W":
+            current_file = None  # W field breaks file association
+            ws = _parse_ws_field(tokens)
+            if ws:
+                result.defines.append(ws)
+
         elif current_file is not None:
             f = _parse_field(tokens, prev_end)
             if f:
                 current_file.fields.append(f)
                 prev_end = f.end
-
-        else:
-            ws = _parse_ws_field(tokens)
-            if ws:
-                result.defines.append(ws)
 
     return result
