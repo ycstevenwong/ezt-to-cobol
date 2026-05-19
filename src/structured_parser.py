@@ -286,9 +286,9 @@ def parse_preamble(source: str) -> Preamble:
             continue  # PARM lines are not part of the record/WS layout — skip
 
         if first == "FILE":
-            if len(tokens) < 3:
+            if len(tokens) < 2:
                 continue
-            org = tokens[2].upper()
+            org = tokens[2].upper() if len(tokens) > 2 else "DISK"
             rec_len = int(tokens[3]) if len(tokens) > 3 and tokens[3].isdigit() else 0
             current_file = EZTFile(name=tokens[1].upper(), org=org, rec_length=rec_len)
             result.files.append(current_file)
