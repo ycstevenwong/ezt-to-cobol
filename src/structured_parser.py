@@ -12,6 +12,7 @@ class EZTField:
     length: int       # number of digits for P type, bytes for all others
     type: str         # N, A, P, B
     decimals: int = 0
+    occurs: int = 0   # 0 = no OCCURS clause
 
     @property
     def physical_bytes(self) -> int:
@@ -21,7 +22,8 @@ class EZTField:
 
     @property
     def end(self) -> int:
-        return self.start + self.physical_bytes - 1
+        total = self.physical_bytes * (self.occurs or 1)
+        return self.start + total - 1
 
 
 @dataclass
@@ -39,6 +41,7 @@ class EZTWSSubfield:
     length: int
     type: str     # N, A, P, B
     decimals: int = 0
+    occurs: int = 0
 
     @property
     def physical_bytes(self) -> int:
@@ -48,7 +51,8 @@ class EZTWSSubfield:
 
     @property
     def end(self) -> int:
-        return self.start + self.physical_bytes - 1
+        total = self.physical_bytes * (self.occurs or 1)
+        return self.start + total - 1
 
 
 @dataclass
@@ -59,6 +63,7 @@ class EZTDefine:
     decimals: int = 0
     value: Optional[str] = None
     subfields: List[EZTWSSubfield] = field(default_factory=list)
+    occurs: int = 0
 
     @property
     def physical_bytes(self) -> int:
@@ -81,8 +86,36 @@ def _blank_or_comment(line: str) -> bool:
     return not line.strip() or bool(_COMMENT.match(line))
 
 
+def _parse_optional_attrs(tokens: List[str], start_idx: int):
+    """Scan tokens from start_idx for optional decimals, VALUE, and OCCURS.
+
+    Returns (decimals, value, occurs).
+    """
+    decimals = 0
+    value = None
+    occurs = 0
+    i = start_idx
+    while i < len(tokens):
+        t = tokens[i].upper()
+        if t == "VALUE" and i + 1 < len(tokens):
+            value = tokens[i + 1].strip("'\"")
+            i += 2
+        elif t == "OCCURS" and i + 1 < len(tokens):
+            try:
+                occurs = int(tokens[i + 1])
+            except ValueError:
+                pass
+            i += 2
+        elif tokens[i].isdigit():
+            decimals = int(tokens[i])
+            i += 1
+        else:
+            i += 1
+    return decimals, value, occurs
+
+
 def _parse_define(tokens: List[str]) -> Optional[EZTDefine]:
-    """Parse a DEFINE statement: DEFINE name type length [decimals] [VALUE literal]."""
+    """Parse a DEFINE statement: DEFINE name type length [decimals] [VALUE v] [OCCURS n]."""
     if len(tokens) < 4 or tokens[0].upper() != "DEFINE":
         return None
     name = tokens[1].upper()
@@ -91,30 +124,18 @@ def _parse_define(tokens: List[str]) -> Optional[EZTDefine]:
         length = int(tokens[3])
     except ValueError:
         return None
-    decimals = 0
-    value = None
-    i = 4
-    while i < len(tokens):
-        if tokens[i].upper() == "VALUE" and i + 1 < len(tokens):
-            value = tokens[i + 1].strip("'\"")
-            i += 2
-        elif tokens[i].isdigit():
-            decimals = int(tokens[i])
-            i += 1
-        else:
-            i += 1
-    return EZTDefine(name=name, type=ftype, length=length, decimals=decimals, value=value)
+    decimals, value, occurs = _parse_optional_attrs(tokens, 4)
+    return EZTDefine(name=name, type=ftype, length=length,
+                     decimals=decimals, value=value, occurs=occurs)
 
 
 def _parse_ws_field(tokens: List[str]) -> Optional[EZTDefine]:
-    """Parse a standalone WS field: name W length type [decimals] [VALUE literal].
+    """Parse a standalone WS field: name W length type [decimals] [VALUE v] [OCCURS n].
 
     W in position 1 is the working-storage marker, replacing the start column
     used by file fields.  Example: SALARY W 4 P 2
     """
-    if len(tokens) < 4:
-        return None
-    if tokens[1].upper() != "W":
+    if len(tokens) < 4 or tokens[1].upper() != "W":
         return None
     try:
         length = int(tokens[2])
@@ -124,19 +145,9 @@ def _parse_ws_field(tokens: List[str]) -> Optional[EZTDefine]:
     if ftype not in ("N", "A", "P", "B"):
         return None
     name = tokens[0].upper()
-    decimals = 0
-    value = None
-    i = 4
-    while i < len(tokens):
-        if tokens[i].upper() == "VALUE" and i + 1 < len(tokens):
-            value = tokens[i + 1].strip("'\"")
-            i += 2
-        elif tokens[i].isdigit():
-            decimals = int(tokens[i])
-            i += 1
-        else:
-            i += 1
-    return EZTDefine(name=name, type=ftype, length=length, decimals=decimals, value=value)
+    decimals, value, occurs = _parse_optional_attrs(tokens, 4)
+    return EZTDefine(name=name, type=ftype, length=length,
+                     decimals=decimals, value=value, occurs=occurs)
 
 
 def _parse_ws_subfield(tokens: List[str], prev_end: int) -> Optional[EZTWSSubfield]:
@@ -181,15 +192,9 @@ def _parse_ws_subfield(tokens: List[str], prev_end: int) -> Optional[EZTWSSubfie
     if ftype not in ("N", "A", "P", "B"):
         return None
 
-    decimals = 0
-    i = dec_idx
-    while i < len(tokens):
-        if tokens[i].isdigit():
-            decimals = int(tokens[i])
-            break
-        i += 1
-
-    return EZTWSSubfield(name=name, start=start, length=length, type=ftype, decimals=decimals)
+    decimals, _, occurs = _parse_optional_attrs(tokens, dec_idx)
+    return EZTWSSubfield(name=name, start=start, length=length,
+                         type=ftype, decimals=decimals, occurs=occurs)
 
 
 def _parse_field(tokens: List[str], prev_end: int) -> Optional[EZTField]:
@@ -203,7 +208,6 @@ def _parse_field(tokens: List[str], prev_end: int) -> Optional[EZTField]:
         length = int(tokens[2])
     except ValueError:
         return None
-    decimals = int(tokens[4]) if len(tokens) > 4 and tokens[4].isdigit() else 0
     if tokens[1] == "*":
         start = prev_end + 1
     else:
@@ -211,7 +215,9 @@ def _parse_field(tokens: List[str], prev_end: int) -> Optional[EZTField]:
             start = int(tokens[1])
         except ValueError:
             return None
-    return EZTField(name=name, start=start, length=length, type=ftype, decimals=decimals)
+    decimals, _, occurs = _parse_optional_attrs(tokens, 4)
+    return EZTField(name=name, start=start, length=length,
+                    type=ftype, decimals=decimals, occurs=occurs)
 
 
 def scan_ws_fields(content: str) -> Tuple[List[EZTDefine], str]:

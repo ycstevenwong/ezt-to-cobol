@@ -19,6 +19,10 @@ def _field_line(prefix: str, name: str, pic: str) -> str:
 
 # ── PIC generation ─────────────────────────────────────────────────────────────
 
+def _occurs(n: int) -> str:
+    return f" OCCURS {n} TIMES" if n else ""
+
+
 def _pic(ftype: str, length: int, decimals: int) -> str:
     t = ftype.upper()
     if t == "N":
@@ -157,7 +161,8 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
             lines.append(f"{prefix}{fname}.")
             lines.extend(_render_subtree(node.children, depth + 1, f.start, f.end))
         else:
-            lines.append(_field_line(prefix, fname, _pic(f.type, f.length, f.decimals)))
+            lines.append(_field_line(prefix, fname,
+                                     _pic(f.type, f.length, f.decimals) + _occurs(f.occurs)))
 
         cur = f.end + 1
 
@@ -251,7 +256,7 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
                 val_clause = f" VALUE '{d.value}'"
         else:
             val_clause = ""
-        lines.append(f"{_A}01  {d.name:<33} {pic_str}{val_clause}.")
+        lines.append(f"{_A}01  {d.name:<33} {pic_str}{val_clause}{_occurs(d.occurs)}.")
 
         if d.subfields:
             redef_name = (d.name + "-FIELDS")[:30]
@@ -262,7 +267,8 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
                 if gap > 0:
                     lines.append(_field_line(f"{_B}05  ", "FILLER", f"PIC X({gap})"))
                 lines.append(_field_line(
-                    f"{_B}05  ", sf.name[:30], _pic(sf.type, sf.length, sf.decimals)
+                    f"{_B}05  ", sf.name[:30],
+                    _pic(sf.type, sf.length, sf.decimals) + _occurs(sf.occurs)
                 ))
                 cur = sf.end + 1
             trailing = d.physical_bytes - cur + 1
