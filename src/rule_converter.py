@@ -7,6 +7,7 @@ from src.structured_parser import EZTDefine, EZTField, EZTFile, parse_preamble, 
 # COBOL area indentation
 _A = " " * 7   # Area A (col 8)  — FD, 01-level
 _B = " " * 11  # Area B (col 12) — 05-level, FD clauses
+_C = " " * 15  # col 16          — 10-level within a WS group
 
 _PIC_COL = 49  # target 0-indexed column for the PIC keyword (consistent across all depths)
 
@@ -256,24 +257,33 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
                 val_clause = f" VALUE '{d.value}'"
         else:
             val_clause = ""
-        lines.append(f"{_A}01  {d.name:<33} {pic_str}{val_clause}{_occurs(d.occurs)}.")
-
         if d.subfields:
+            # 01-level REDEFINES is invalid in WORKING-STORAGE.
+            # Wrap in a group item so REDEFINES sits at level 05:
+            #   01  PARENT.
+            #       05  PARENT-FULL   PIC X(n).
+            #       05  PARENT-FIELDS REDEFINES PARENT-FULL.
+            #           10  sub-field ...
+            full_name  = (d.name + "-FULL")[:30]
             redef_name = (d.name + "-FIELDS")[:30]
-            lines.append(f"{_A}01  {redef_name} REDEFINES {d.name}.")
+            lines.append(f"{_A}01  {d.name}.")
+            lines.append(_field_line(f"{_B}05  ", full_name, pic_str + val_clause))
+            lines.append(f"{_B}05  {redef_name} REDEFINES {full_name}.")
             cur = 1
             for sf in sorted(d.subfields, key=lambda s: s.start):
                 gap = sf.start - cur
                 if gap > 0:
-                    lines.append(_field_line(f"{_B}05  ", "FILLER", f"PIC X({gap})"))
+                    lines.append(_field_line(f"{_C}10  ", "FILLER", f"PIC X({gap})"))
                 lines.append(_field_line(
-                    f"{_B}05  ", sf.name[:30],
+                    f"{_C}10  ", sf.name[:30],
                     _pic(sf.type, sf.length, sf.decimals) + _occurs(sf.occurs)
                 ))
                 cur = sf.end + 1
             trailing = d.physical_bytes - cur + 1
             if trailing > 0:
-                lines.append(_field_line(f"{_B}05  ", "FILLER", f"PIC X({trailing})"))
+                lines.append(_field_line(f"{_C}10  ", "FILLER", f"PIC X({trailing})"))
+        else:
+            lines.append(f"{_A}01  {d.name:<33} {pic_str}{val_clause}{_occurs(d.occurs)}.")
 
     return "\n".join(lines)
 
