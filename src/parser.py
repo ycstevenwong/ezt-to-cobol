@@ -41,7 +41,7 @@ def parse_ezt(source: str) -> List[EZTSection]:
 
     i = 0
     while i < len(lines):
-        line = lines[i]
+        line = lines[i][:72]   # cols 73+ are sequence/id area — ignore
 
         if _is_comment_or_blank(line):
             i += 1
@@ -93,11 +93,11 @@ def _collect_block(
 
     Blank and comment lines are always absorbed into the current block.
     """
-    block = [lines[start]]
+    block = [lines[start][:72]]
     i = start + 1
 
     while i < len(lines):
-        line = lines[i]
+        line = lines[i][:72]
 
         # Blank / comment lines always belong to the current block
         if _is_comment_or_blank(line):

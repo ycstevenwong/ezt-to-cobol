@@ -264,6 +264,7 @@ def scan_ws_fields(content: str) -> Tuple[List[EZTDefine], str]:
     clean_lines: List[str] = []
 
     for line in content.splitlines():
+        line = line[:72]       # cols 73+ are sequence/id area — ignore
         tokens = line.strip().split()
         if not tokens:
             clean_lines.append(line)
@@ -310,6 +311,7 @@ def parse_preamble(source: str) -> Preamble:
     ws_sub_end: dict = {}   # parent_name -> last sub-field end position
 
     for line in source.splitlines():
+        line = line[:72]       # cols 73+ are sequence/id area — ignore
         if _blank_or_comment(line):
             continue
         if _SECTION_BREAK.match(line):
