@@ -216,8 +216,10 @@ def _record_layout(file: EZTFile) -> List[str]:
 # ── FILE-CONTROL ────────────────────────────────────────────────────────────────
 # No leading spaces here — assembler's _indent() adds 11 spaces when assembling.
 
-_ORG = {"DISK": "SEQUENTIAL", "TAPE": "SEQUENTIAL", "VSAM": "INDEXED", "PRINTER": "LINE SEQUENTIAL"}
-_ACC = {"DISK": "SEQUENTIAL", "TAPE": "SEQUENTIAL", "VSAM": "RANDOM",  "PRINTER": "SEQUENTIAL"}
+_ORG = {"DISK": "SEQUENTIAL", "TAPE": "SEQUENTIAL", "VSAM": "INDEXED",
+        "PRINTER": "LINE SEQUENTIAL", "WORK": "SEQUENTIAL"}
+_ACC = {"DISK": "SEQUENTIAL", "TAPE": "SEQUENTIAL", "VSAM": "RANDOM",
+        "PRINTER": "SEQUENTIAL",     "WORK": "SEQUENTIAL"}
 
 
 def gen_file_control(files: List[EZTFile]) -> str:

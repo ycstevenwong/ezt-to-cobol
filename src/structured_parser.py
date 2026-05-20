@@ -81,6 +81,22 @@ def _blank_or_comment(line: str) -> bool:
     return not line.strip() or bool(_COMMENT.match(line))
 
 
+# Short-form EZT file organisation keywords → canonical name
+_ORG_ALIASES: dict = {
+    "VS":      "VSAM",
+    "DA":      "DISK",
+    "TA":      "TAPE",
+    "PRINT":   "PRINTER",
+    "PR":      "PRINTER",
+    "WORK":    "WORK",
+    "WK":      "WORK",
+}
+
+
+def _normalise_org(org: str) -> str:
+    return _ORG_ALIASES.get(org.upper(), org.upper())
+
+
 def _parse_heading_value(tokens: List[str], i: int) -> Tuple[str, int]:
     """Parse the text after the HEADING keyword.
 
@@ -321,7 +337,7 @@ def parse_preamble(source: str) -> Preamble:
         if first == "FILE":
             if len(tokens) < 2:
                 continue
-            org = tokens[2].upper() if len(tokens) > 2 else "DISK"
+            org = _normalise_org(tokens[2]) if len(tokens) > 2 else "DISK"
             rec_len = int(tokens[3]) if len(tokens) > 3 and tokens[3].isdigit() else 0
             current_file = EZTFile(name=tokens[1].upper(), org=org, rec_length=rec_len)
             result.files.append(current_file)
