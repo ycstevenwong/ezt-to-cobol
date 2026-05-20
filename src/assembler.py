@@ -187,7 +187,7 @@ def assemble(
     data_div = "\n".join(data_sections)
 
     # PROCEDURE DIVISION
-    proc_body = "\n\n".join(procedure_parts) if procedure_parts else "       STOP RUN."
+    proc_body = "\n\n".join(procedure_parts) if procedure_parts else "           STOP RUN."
     procedure_div = "       PROCEDURE DIVISION.\n" + proc_body
 
     cobol = "\n\n".join([ident, env_div, data_div, procedure_div]) + "\n"
