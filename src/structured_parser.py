@@ -320,8 +320,8 @@ def parse_preamble(source: str) -> Preamble:
     ws_by_name: dict = {}   # name -> EZTDefine, for sub-field parent lookup
     ws_sub_end: dict = {}   # parent_name -> last sub-field end position
 
-    for line in source.splitlines():
-        line = line[:72]       # cols 73+ are sequence/id area — ignore
+    for raw_line in source.splitlines():
+        line = raw_line[:72]   # cols 73+ are sequence/id area — ignore
         if _blank_or_comment(line):
             continue
         if _SECTION_BREAK.match(line):
@@ -337,8 +337,33 @@ def parse_preamble(source: str) -> Preamble:
         if first == "FILE":
             if len(tokens) < 2:
                 continue
-            org = _normalise_org(tokens[2]) if len(tokens) > 2 else "DISK"
-            rec_len = int(tokens[3]) if len(tokens) > 3 and tokens[3].isdigit() else 0
+            # For FILE declarations scan the FULL line (cols 1-80) for the org
+            # keyword: long file names or spacing may push it past col 72 even
+            # though it is still part of the EZT code, not the sequence area.
+            # We stop scanning at the first 8-digit all-numeric token (sequence
+            # number) so it is never mistaken for a record length.
+            org = "DISK"
+            rec_len = 0
+            _CANONICAL = {"DISK", "VSAM", "TAPE", "PRINTER", "WORK"}
+            # Sorted longest-first so "VSAM" is tried before "VS" etc.
+            _ALL_KEYS = sorted(
+                set(_ORG_ALIASES) | _CANONICAL, key=len, reverse=True
+            )
+            for tok in raw_line.strip().split()[2:]:
+                if len(tok) == 8 and tok.isdigit():
+                    break           # reached the sequence-number field — stop
+                tok_up = tok.upper()
+                # Exact match first, then prefix-match (e.g. "VS00010000")
+                canon = _normalise_org(tok_up)
+                if canon not in _CANONICAL:
+                    for key in _ALL_KEYS:
+                        if tok_up.startswith(key) and tok_up[len(key):].isdigit():
+                            canon = _normalise_org(key)
+                            break
+                if canon in _CANONICAL:
+                    org = canon
+                elif tok.isdigit():
+                    rec_len = int(tok)
             current_file = EZTFile(name=tokens[1].upper(), org=org, rec_length=rec_len)
             result.files.append(current_file)
             prev_end = 0
