@@ -162,7 +162,7 @@ def assemble(
                 procedure_parts.append(proc)
 
     # Build each division
-    ident = _IDENT_DIV.format(program_id=program_name[:8].upper())
+    ident = _IDENT_DIV.format(program_id=program_name[:30].upper())
 
     # ENVIRONMENT DIVISION
     if file_control_parts:
