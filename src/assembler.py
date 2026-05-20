@@ -28,20 +28,30 @@ def _section_key(section: EZTSection) -> str:
     return f"{section.type.value}:{section.name}"
 
 
-def _split_file_def(cobol: str) -> Tuple[str, str]:
-    """Split Claude's FILE_DEF output at the --- FILE-CONTROL --- / --- FILE-SECTION --- markers."""
-    fc_marker = re.compile(r"^---\s*FILE-CONTROL\s*---", re.IGNORECASE | re.MULTILINE)
-    fs_marker = re.compile(r"^---\s*FILE-SECTION\s*---", re.IGNORECASE | re.MULTILINE)
+def _split_file_def(cobol: str) -> Tuple[str, str, str]:
+    """Split FILE_DEF output at its three marker blocks.
 
-    fc_match = fc_marker.search(cobol)
-    fs_match = fs_marker.search(cobol)
+    Returns (file_control_text, file_section_text, ws_status_text).
+    """
+    fc_marker = re.compile(r"^---\s*FILE-CONTROL\s*---",   re.IGNORECASE | re.MULTILINE)
+    fs_marker = re.compile(r"^---\s*FILE-SECTION\s*---",   re.IGNORECASE | re.MULTILINE)
+    ws_marker = re.compile(r"^---\s*WORKING-STORAGE\s*---", re.IGNORECASE | re.MULTILINE)
 
-    if fc_match and fs_match:
-        fc_text = cobol[fc_match.end(): fs_match.start()].strip()   # no indent; assembler adds 11
-        fs_text = cobol[fs_match.end():].strip('\n')                 # preserve COBOL indentation
-        return fc_text, fs_text
+    fc_m = fc_marker.search(cobol)
+    fs_m = fs_marker.search(cobol)
+    ws_m = ws_marker.search(cobol)
 
-    # Fallback: heuristic split — SELECT lines → FILE-CONTROL, FD lines → FILE SECTION
+    if fc_m and fs_m:
+        fc_text = cobol[fc_m.end(): fs_m.start()].strip()
+        if ws_m:
+            fs_text = cobol[fs_m.end(): ws_m.start()].strip('\n')
+            ws_text = cobol[ws_m.end():].strip('\n')
+        else:
+            fs_text = cobol[fs_m.end():].strip('\n')
+            ws_text = ""
+        return fc_text, fs_text, ws_text
+
+    # Fallback: heuristic split (no WS in this case)
     fc_lines, fs_lines = [], []
     in_fd = False
     for line in cobol.splitlines():
@@ -54,7 +64,7 @@ def _split_file_def(cobol: str) -> Tuple[str, str]:
             fs_lines.append(line)
         else:
             fc_lines.append(line)
-    return "\n".join(fc_lines).strip(), "\n".join(fs_lines).strip()
+    return "\n".join(fc_lines).strip(), "\n".join(fs_lines).strip(), ""
 
 
 def _split_report(cobol: str) -> Tuple[str, str]:
@@ -119,11 +129,13 @@ def assemble(
             continue
 
         if section.type == SectionType.FILE_DEF:
-            fc, fs = _split_file_def(cobol)
+            fc, fs, ws = _split_file_def(cobol)
             if fc:
                 file_control_parts.append(fc)
             if fs:
                 file_section_parts.append(fs)
+            if ws:
+                ws_parts.append(ws)
 
         elif section.type == SectionType.FIELD_DEF:
             clean = _strip_division_header(

@@ -227,13 +227,28 @@ def gen_file_control(files: List[EZTFile]) -> str:
     for f in files:
         org = _ORG.get(f.org, "SEQUENTIAL")
         acc = _ACC.get(f.org, "SEQUENTIAL")
-        blocks.append(
-            f"SELECT {f.name}\n"
-            f"    ASSIGN TO {f.name}\n"
-            f"    ORGANIZATION IS {org}\n"
-            f"    ACCESS MODE IS {acc}."
-        )
+        clauses = [
+            f"SELECT {f.name}",
+            f"    ASSIGN TO {f.name}",
+            f"    ORGANIZATION IS {org}",
+            f"    ACCESS MODE IS {acc}",
+        ]
+        if f.org == "VSAM" and f.fields:
+            # Key field = first field by start position (smallest extent at that start)
+            key_field = sorted(f.fields, key=lambda x: (x.start, x.length))[0]
+            clauses.append(f"    RECORD KEY IS {key_field.name[:30]}")
+        clauses.append(f"    FILE STATUS IS WS-{f.name}-STATUS.")
+        blocks.append("\n".join(clauses))
     return "\n".join(blocks)
+
+
+def gen_file_status_ws(files: List[EZTFile]) -> str:
+    """Generate WORKING-STORAGE file-status fields (one PIC X(2) per file)."""
+    lines = []
+    for f in files:
+        ws_name = f"WS-{f.name}-STATUS"
+        lines.append(f"{_A}01  {ws_name:<33} PIC X(2) VALUE SPACES.")
+    return "\n".join(lines)
 
 
 # ── FILE SECTION ────────────────────────────────────────────────────────────────
@@ -311,16 +326,20 @@ def hoist_ws_fields(content: str) -> Tuple[str, str]:
 
 
 def convert_file_def(source: str) -> str:
-    """Generate FILE-CONTROL and FILE SECTION COBOL from the full EZT source.
+    """Generate FILE-CONTROL, FILE SECTION, and file-status WS from the full EZT source.
 
-    Needs the full source (not just the FILE_DEF section content) so it can
-    associate field definition lines with their parent FILE statements.
-    Returns text with --- FILE-CONTROL --- and --- FILE-SECTION --- markers.
+    Returns text with three marker-delimited blocks:
+      --- FILE-CONTROL ---   SELECT … entries
+      --- FILE-SECTION ---   FD … entries
+      --- WORKING-STORAGE --- file-status 01-level fields
     """
     preamble = parse_preamble(source)
     fc = gen_file_control(preamble.files)
     fs = gen_file_section(preamble.files)
-    return f"--- FILE-CONTROL ---\n{fc}\n--- FILE-SECTION ---\n{fs}"
+    ws = gen_file_status_ws(preamble.files)
+    return (f"--- FILE-CONTROL ---\n{fc}\n"
+            f"--- FILE-SECTION ---\n{fs}\n"
+            f"--- WORKING-STORAGE ---\n{ws}")
 
 
 def convert_field_def(field_def_content: str) -> str:
