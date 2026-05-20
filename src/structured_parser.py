@@ -13,6 +13,7 @@ class EZTField:
     type: str         # N, A, P, B
     decimals: int = 0
     occurs: int = 0   # 0 = no OCCURS clause
+    heading: Optional[str] = None
 
     @property
     def physical_bytes(self) -> int:
@@ -86,14 +87,41 @@ def _blank_or_comment(line: str) -> bool:
     return not line.strip() or bool(_COMMENT.match(line))
 
 
-def _parse_optional_attrs(tokens: List[str], start_idx: int):
-    """Scan tokens from start_idx for optional decimals, VALUE, and OCCURS.
+def _parse_heading_value(tokens: List[str], i: int) -> Tuple[str, int]:
+    """Parse the text after the HEADING keyword.
 
-    Returns (decimals, value, occurs).
+    Handles both parenthesised form  HEADING ('ACCT NUM')
+    and bare quoted form             HEADING 'TC'
+    Returns (heading_text, next_token_index).
+    """
+    if i >= len(tokens):
+        return "", i
+    tok = tokens[i]
+    if tok.startswith("("):
+        # Collect tokens until the one containing the closing )
+        parts: List[str] = []
+        while i < len(tokens):
+            parts.append(tokens[i])
+            if ")" in tokens[i]:
+                i += 1
+                break
+            i += 1
+        raw = " ".join(parts).lstrip("(").rstrip(")")
+    else:
+        raw = tok
+        i += 1
+    return raw.strip().strip("'\"").strip(), i
+
+
+def _parse_optional_attrs(tokens: List[str], start_idx: int):
+    """Scan tokens from start_idx for optional decimals, VALUE, OCCURS, and HEADING.
+
+    Returns (decimals, value, occurs, heading).
     """
     decimals = 0
     value = None
     occurs = 0
+    heading = None
     i = start_idx
     while i < len(tokens):
         t = tokens[i].upper()
@@ -106,12 +134,15 @@ def _parse_optional_attrs(tokens: List[str], start_idx: int):
             except ValueError:
                 pass
             i += 2
+        elif t == "HEADING":
+            i += 1
+            heading, i = _parse_heading_value(tokens, i)
         elif tokens[i].isdigit():
             decimals = int(tokens[i])
             i += 1
         else:
             i += 1
-    return decimals, value, occurs
+    return decimals, value, occurs, heading
 
 
 def _parse_define(tokens: List[str]) -> Optional[EZTDefine]:
@@ -124,7 +155,7 @@ def _parse_define(tokens: List[str]) -> Optional[EZTDefine]:
         length = int(tokens[3])
     except ValueError:
         return None
-    decimals, value, occurs = _parse_optional_attrs(tokens, 4)
+    decimals, value, occurs, _ = _parse_optional_attrs(tokens, 4)
     return EZTDefine(name=name, type=ftype, length=length,
                      decimals=decimals, value=value, occurs=occurs)
 
@@ -145,7 +176,7 @@ def _parse_ws_field(tokens: List[str]) -> Optional[EZTDefine]:
     if ftype not in ("N", "A", "P", "B"):
         return None
     name = tokens[0].upper()
-    decimals, value, occurs = _parse_optional_attrs(tokens, 4)
+    decimals, value, occurs, _ = _parse_optional_attrs(tokens, 4)
     return EZTDefine(name=name, type=ftype, length=length,
                      decimals=decimals, value=value, occurs=occurs)
 
@@ -192,7 +223,7 @@ def _parse_ws_subfield(tokens: List[str], prev_end: int) -> Optional[EZTWSSubfie
     if ftype not in ("N", "A", "P", "B"):
         return None
 
-    decimals, _, occurs = _parse_optional_attrs(tokens, dec_idx)
+    decimals, _, occurs, _ = _parse_optional_attrs(tokens, dec_idx)
     return EZTWSSubfield(name=name, start=start, length=length,
                          type=ftype, decimals=decimals, occurs=occurs)
 
@@ -215,9 +246,9 @@ def _parse_field(tokens: List[str], prev_end: int) -> Optional[EZTField]:
             start = int(tokens[1])
         except ValueError:
             return None
-    decimals, _, occurs = _parse_optional_attrs(tokens, 4)
+    decimals, _, occurs, heading = _parse_optional_attrs(tokens, 4)
     return EZTField(name=name, start=start, length=length,
-                    type=ftype, decimals=decimals, occurs=occurs)
+                    type=ftype, decimals=decimals, occurs=occurs, heading=heading)
 
 
 def scan_ws_fields(content: str) -> Tuple[List[EZTDefine], str]:

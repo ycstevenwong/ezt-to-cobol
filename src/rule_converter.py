@@ -126,6 +126,9 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
         f = node.field
         fname = f.name[:30]
 
+        if f.heading:
+            lines.append(f"      * HEADING: {f.heading}")
+
         same_start = _flatten_same_start_chain(node)
         if same_start is not None:
             # Base field
