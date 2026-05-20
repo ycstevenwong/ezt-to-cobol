@@ -43,7 +43,7 @@ def _convert_one(
     if dry_run:
         return True
 
-    prog_name = program_name or input_file.stem[:30].upper()
+    prog_name = program_name or input_file.stem[:8].upper()
 
     try:
         converted = convert_all(client, sections, source, model=model, verbose=verbose)
