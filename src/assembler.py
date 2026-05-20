@@ -162,7 +162,10 @@ def assemble(
                 procedure_parts.append(proc)
 
     # Build each division
-    ident = _IDENT_DIV.format(program_id=program_name[:8].upper())
+    # COBOL PROGRAM-ID: letters, digits, hyphens only — strip anything else
+    # (e.g. a period that crept in from a multi-dot filename like TEST123.OLD)
+    clean_id = re.sub(r"[^A-Z0-9-]", "", program_name.upper())[:8]
+    ident = _IDENT_DIV.format(program_id=clean_id or "COBOLPGM")
 
     # ENVIRONMENT DIVISION
     if file_control_parts:
