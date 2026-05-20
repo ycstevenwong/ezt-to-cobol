@@ -234,9 +234,19 @@ def gen_file_control(files: List[EZTFile]) -> str:
             f"    ACCESS MODE IS {acc}",
         ]
         if f.org == "VSAM" and f.fields:
-            # Key field = first field by start position (smallest extent at that start)
-            key_field = sorted(f.fields, key=lambda x: (x.start, x.length))[0]
-            clauses.append(f"    RECORD KEY IS {key_field.name[:30]}")
+            # Key field = first field by (start, length) — shortest at the earliest position.
+            sorted_fields = sorted(f.fields, key=lambda x: (x.start, x.length))
+            key_f = sorted_fields[0]
+            key_name = key_f.name[:30]
+            # If this field contains other fields it becomes a COBOL group (no PIC).
+            # RECORD KEY must be elementary → use the generated -FULL counterpart.
+            is_container = any(
+                key_f.start <= o.start and key_f.end >= o.end
+                for o in sorted_fields[1:]
+            )
+            if is_container:
+                key_name = (key_f.name + "-FULL")[:30]
+            clauses.append(f"    RECORD KEY IS {key_name}")
         clauses.append(f"    FILE STATUS IS WS-{f.name}-STATUS.")
         blocks.append("\n".join(clauses))
     return "\n".join(blocks)
