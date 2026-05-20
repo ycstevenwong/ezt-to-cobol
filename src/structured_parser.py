@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple
 class EZTField:
     name: str
     start: int        # resolved byte position (1-based)
-    length: int       # number of digits for P type, bytes for all others
+    length: int       # physical byte length for ALL types (P is already packed)
     type: str         # N, A, P, B
     decimals: int = 0
     occurs: int = 0   # 0 = no OCCURS clause
@@ -17,9 +17,7 @@ class EZTField:
 
     @property
     def physical_bytes(self) -> int:
-        if self.type.upper() == "P":
-            return math.ceil((self.length + 1) / 2)
-        return self.length
+        return self.length  # length is always physical bytes in EZT
 
     @property
     def end(self) -> int:
@@ -46,9 +44,7 @@ class EZTWSSubfield:
 
     @property
     def physical_bytes(self) -> int:
-        if self.type.upper() == "P":
-            return math.ceil((self.length + 1) / 2)
-        return self.length
+        return self.length  # length is always physical bytes in EZT
 
     @property
     def end(self) -> int:
@@ -60,7 +56,7 @@ class EZTWSSubfield:
 class EZTDefine:
     name: str
     type: str
-    length: int
+    length: int       # physical byte length for ALL types
     decimals: int = 0
     value: Optional[str] = None
     subfields: List[EZTWSSubfield] = field(default_factory=list)
@@ -68,9 +64,7 @@ class EZTDefine:
 
     @property
     def physical_bytes(self) -> int:
-        if self.type.upper() == "P":
-            return math.ceil((self.length + 1) / 2)
-        return self.length
+        return self.length  # length is always physical bytes in EZT
 
 
 @dataclass

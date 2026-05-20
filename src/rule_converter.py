@@ -31,8 +31,13 @@ def _pic(ftype: str, length: int, decimals: int) -> str:
     if t == "A":
         return f"PIC X({length})"
     if t == "P":
-        int_d = length - decimals
-        return f"PIC S9({int_d})V9({decimals}) COMP-3" if decimals else f"PIC S9({length}) COMP-3"
+        # EZT length = physical packed bytes.  Digit count differs by parity:
+        #   Odd  bytes N → (N-1)*2  digits  e.g. 5 bytes → (5-1)*2 = 8
+        #   Even bytes N → N*2-1    digits  e.g. 4 bytes → 4*2-1   = 7
+        # Both round-trip back correctly via ceil((digits+1)/2).
+        digits = (length - 1) * 2 if length % 2 == 1 else length * 2 - 1
+        int_d  = digits - decimals
+        return f"PIC S9({int_d})V9({decimals}) COMP-3" if decimals else f"PIC S9({digits}) COMP-3"
     if t == "B":
         return f"PIC S9({length}) COMP"
     return f"PIC X({length})"
