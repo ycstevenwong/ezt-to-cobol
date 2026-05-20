@@ -259,7 +259,7 @@ def gen_file_section(files: List[EZTFile]) -> str:
         if f.rec_length:
             fd.append(f"{_B}RECORD CONTAINS {f.rec_length} CHARACTERS.")
         else:
-            fd.append(f"{_B}RECORD CONTAINS 0 RECORDS.")
+            fd.append(f"{_B}RECORD CONTAINS 0 CHARACTERS.")
         fd += _record_layout(f)
         blocks.append("\n".join(fd))
     return "\n".join(blocks)
