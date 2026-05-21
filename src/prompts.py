@@ -73,14 +73,49 @@ You are an Easytrieve (EZT) to COBOL conversion specialist for IBM mainframe env
 """
 
 JOB_PROMPT = """\
-Convert this Easytrieve JOB section to COBOL PROCEDURE DIVISION code.
+Convert this Easytrieve JOB section to IBM Enterprise COBOL PROCEDURE DIVISION code.
 
-Output ONLY the PROCEDURE DIVISION content (starting with "       PROCEDURE DIVISION.") \
-including all paragraphs: OPEN/CLOSE, READ loop, processing logic, and STOP RUN. \
-No explanations.
+━━ WHAT TO OUTPUT ━━
+Output ONLY the PROCEDURE DIVISION content, starting with:
+       PROCEDURE DIVISION.
+Include all paragraphs: OPEN/CLOSE, main READ loop, processing logic, STOP RUN.
+No explanations, no markdown fences.
 
-IMPORTANT: Do NOT output WORKING-STORAGE SECTION or any data declarations (01-level items, \
-REDEFINES, etc.). The DATA DIVISION is already complete — output executable statements only.
+━━ WHAT NOT TO OUTPUT ━━
+Do NOT output WORKING-STORAGE SECTION or any data declarations (01-level items,
+REDEFINES, PIC clauses, VALUE clauses, etc.).
+The DATA DIVISION is already complete — executable statements only.
+
+━━ IBM ENTERPRISE COBOL STANDARDS ━━
+Column layout (fixed format):
+  • Paragraph names and division/section headers → Area A, column 8
+  • All executable statements → Area B, column 12 (or deeper for nesting)
+  • Nothing in columns 73+ (identification area — leave blank)
+
+Period (full stop) rules — the most critical COBOL rule:
+  • ONE period ends each paragraph: place it only on the LAST statement of the paragraph
+  • NEVER put a period inside IF / EVALUATE / PERFORM / READ / WRITE blocks
+  • Structured delimiters END-IF, END-EVALUATE, END-PERFORM, END-READ, END-WRITE
+    terminate those blocks — the period comes only after the outermost END-xxx
+
+Structured statements — always use scope terminators:
+  • IF ... ELSE ... END-IF          (no period inside)
+  • EVALUATE ... WHEN ... END-EVALUATE
+  • PERFORM ... END-PERFORM         (inline PERFORM must have END-PERFORM)
+  • READ ... AT END ... END-READ
+  • WRITE ... INVALID KEY ... END-WRITE
+
+Correct paragraph structure example:
+       PROCESS-RECORD.
+           IF WS-STATUS = 'A'
+               PERFORM WRITE-OUTPUT
+               ADD 1 TO WS-COUNTER
+           ELSE
+               ADD 1 TO WS-SKIP-CTR
+           END-IF
+           READ INPUT-FILE
+               AT END MOVE 'Y' TO WS-EOF
+           END-READ.
 
 Prior converted context (DATA DIVISION already generated):
 {context}

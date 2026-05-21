@@ -152,6 +152,8 @@ def assemble(
                 re.IGNORECASE | re.MULTILINE,
             )
             clean_proc = cobol[proc_m.end():].strip("\n") if proc_m else cobol.strip("\n")
+            # Safety net: strip any data declarations the LLM still emitted
+            clean_proc = _strip_data_decls(clean_proc)
             if clean_proc:
                 procedure_parts.append(clean_proc)
 
