@@ -125,7 +125,7 @@ def assemble(
 
     for section in sections:
         key = _section_key(section)
-        cobol = converted.get(key, "").strip('\n')
+        cobol = (converted.get(key) or "").strip('\n')
         if not cobol:
             continue
 
