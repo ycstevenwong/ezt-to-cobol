@@ -159,14 +159,16 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
                 if filler_bytes > 0:
                     lines.append(_field_line(child_prefix, "FILLER",
                                              f"PIC X({filler_bytes})"))
-        elif node.children and depth == 2:
-            # Decomposition group at level 10: raw field + named REDEFINES with sub-fields
+        elif node.children and depth <= 2:
+            # Field with sub-fields: emit as elementary + named REDEFINES group.
+            # Using a plain group (same name) would duplicate the field name at
+            # an adjacent level, which causes COBOL compile errors.
             lines.append(_field_line(prefix, fname, _pic(f.type, f.length, f.decimals)))
             redef_name = (f.name + "-FIELDS")[:30]
             lines.append(f"{prefix}{redef_name} REDEFINES {fname}.")
             lines.extend(_render_subtree(node.children, depth + 1, f.start, f.end))
         elif node.children:
-            # Plain group (deeper than level 10)
+            # Plain group (depth > 2, level 15+)
             lines.append(f"{prefix}{fname}.")
             lines.extend(_render_subtree(node.children, depth + 1, f.start, f.end))
         else:
@@ -206,9 +208,25 @@ def _record_layout(file: EZTFile) -> List[str]:
         lines.extend(_render_subtree(root.children, 2, root.field.start, root.field.end))
         return lines
 
-    # Multiple roots or a single leaf → standard single-01 sequential layout.
+    # Single leaf with no sub-fields → make the field the 01-level item directly.
+    # Wrapping it in a group named {file}-REC would duplicate the field's own name.
+    if len(roots) == 1 and not roots[0].children:
+        root = roots[0]
+        pic = _pic(root.field.type, root.field.length, root.field.decimals) + _occurs(root.field.occurs)
+        lines = []
+        if root.field.heading:
+            lines.append(f"      * HEADING: {root.field.heading}")
+        lines.append(_field_line(f"{_A}01  ", root.field.name[:30], pic))
+        return lines
+
+    # Multiple roots → sequential layout under a group record.
+    # If the auto-generated group name clashes with a field name, rename it.
     rec_end = file.rec_length or (roots[-1].field.end if roots else 0)
-    lines = [f"{_A}01  {file.name}-REC."]
+    field_names = {f.name.upper() for f in file.fields}
+    rec_name = f"{file.name}-REC"
+    if rec_name.upper() in field_names:
+        rec_name = f"{file.name}-RECORD"
+    lines = [f"{_A}01  {rec_name[:30]}."]
     lines.extend(_render_subtree(roots, 1, 1, rec_end))
     return lines
 
