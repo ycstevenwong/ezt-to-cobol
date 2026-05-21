@@ -178,16 +178,23 @@ def _parse_optional_attrs(tokens: List[str], start_idx: int):
         t = tokens[i].upper()
         if t == "VALUE" and i + 1 < len(tokens):
             raw = tokens[i + 1]
-            # Strip EZT statement-terminator period that appears after the value.
-            # Rules: bare/numeric token ending in '.' → strip it.
-            #        quoted token ending in '.' or "." → strip the trailing period.
-            #        quoted token where period is inside quotes (e.g. 'A.') → keep.
+            i += 2
+            # A quoted VALUE whose content contains spaces gets split by split()
+            # (e.g. VALUE ' ' → tokens "'" and "'").  Rejoin until closing quote.
+            if raw.startswith(("'", '"')):
+                q = raw[0]
+                while not (len(raw) >= 2 and raw.endswith(q)):
+                    if i < len(tokens):
+                        raw += ' ' + tokens[i]
+                        i += 1
+                    else:
+                        break
+            # Strip EZT statement-terminator period (outside quotes only).
             if not raw.startswith(("'", '"')) and raw.endswith("."):
-                raw = raw[:-1]          # e.g. '0.' → '0'
-            elif (raw.endswith("'.") or raw.endswith('".')):
+                raw = raw[:-1]          # e.g. 0. → 0
+            elif raw.endswith("'.") or raw.endswith('".'):
                 raw = raw[:-1]          # e.g. 'ABC'. → 'ABC'
             value = raw.strip("'\"")
-            i += 2
         elif t == "OCCURS" and i + 1 < len(tokens):
             try:
                 occurs = int(tokens[i + 1])
