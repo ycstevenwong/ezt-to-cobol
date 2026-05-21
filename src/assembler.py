@@ -162,12 +162,10 @@ def assemble(
             py_ws = gen_report_ws(section.name, section.content)
             if py_ws:
                 ws_parts.append(py_ws)
-            # LLM generates field-specific WS (TITLE layout, PRINT detail, etc.)
-            ws_extra, proc = _split_report(cobol)
-            if ws_extra:
-                ws_parts.append(ws_extra)
-            if proc:
-                procedure_parts.append(proc)
+            # LLM generates only procedure paragraphs — strip any WS it emits anyway
+            clean_proc = _strip_data_decls(cobol)
+            if clean_proc:
+                procedure_parts.append(clean_proc)
 
     # Build each division
     # COBOL PROGRAM-ID: letters, digits, hyphens only — strip anything else
