@@ -3,6 +3,7 @@ import re
 from typing import Dict, List, Tuple
 
 from src.parser import EZTSection, SectionType
+from src.rule_converter import gen_report_ws
 
 _IDENT_DIV = """\
        IDENTIFICATION DIVISION.
@@ -155,6 +156,11 @@ def assemble(
                 procedure_parts.append(clean_proc)
 
         elif section.type == SectionType.REPORT:
+            # Python generates fixed WS (counters, accumulators) deterministically
+            py_ws = gen_report_ws(section.name, section.content)
+            if py_ws:
+                ws_parts.append(py_ws)
+            # LLM generates field-specific WS (TITLE layout, PRINT detail, etc.)
             ws_extra, proc = _split_report(cobol)
             if ws_extra:
                 ws_parts.append(ws_extra)

@@ -331,6 +331,65 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
 
 # ── Public API ──────────────────────────────────────────────────────────────────
 
+def gen_report_ws(report_name: str, content: str) -> str:
+    """Generate deterministic WORKING-STORAGE for a REPORT section.
+
+    Covers items whose structure is fixed regardless of report content:
+      - Page/line counters and limits (adjusted by LINESIZE/PAGESIZE directives)
+      - PRINT-REC output buffer
+      - SUM field accumulators (WS-{FIELD}-TOT / WS-{FIELD}-TOT-D)
+      - COUNT accumulator (WS-{RPTNAME}-CNT / WS-{RPTNAME}-CNT-D)
+
+    Field-specific layout items (TITLE, HEADING, PRINT detail line, FOOTING,
+    CONTROL save area) are left to the LLM because they require column-position
+    and field-PIC knowledge.
+    """
+    rpt = report_name.upper()
+    line_limit  = 55
+    page_limit  = 60
+    print_width = 133
+
+    for raw in content.splitlines():
+        tokens = raw.strip().split()
+        if not tokens:
+            continue
+        kw = tokens[0].upper()
+        if kw == "LINESIZE" and len(tokens) > 1 and tokens[1].isdigit():
+            print_width = int(tokens[1])
+            line_limit  = print_width - 5
+        elif kw == "PAGESIZE" and len(tokens) > 1 and tokens[1].isdigit():
+            page_limit = int(tokens[1])
+            line_limit = page_limit - 5
+
+    lines: List[str] = [
+        _field_line(f"{_A}01  ", "WS-PAGE-CTR",   f"PIC 9(4) VALUE ZERO"),
+        _field_line(f"{_A}01  ", "WS-LINE-CTR",   f"PIC 9(3) VALUE ZERO"),
+        _field_line(f"{_A}01  ", "WS-PAGE-LIMIT", f"PIC 9(3) VALUE {page_limit}"),
+        _field_line(f"{_A}01  ", "WS-LINE-LIMIT", f"PIC 9(3) VALUE {line_limit}"),
+        _field_line(f"{_A}01  ", "PRINT-REC",     f"PIC X({print_width}) VALUE SPACES"),
+    ]
+
+    for raw in content.splitlines():
+        tokens = raw.strip().split()
+        if not tokens or tokens[0].upper() != "SUM":
+            continue
+        for field in tokens[1:]:
+            fname = field.upper()
+            lines.append(_field_line(f"{_A}01  ", f"WS-{fname}-TOT"[:30],
+                                     "PIC S9(12)V9(2) COMP-3 VALUE ZERO"))
+            lines.append(_field_line(f"{_A}01  ", f"WS-{fname}-TOT-D"[:30],
+                                     "PIC Z(11)9.99"))
+
+    if any(raw.strip().upper().startswith("COUNT")
+           for raw in content.splitlines()):
+        lines.append(_field_line(f"{_A}01  ", f"WS-{rpt}-CNT"[:30],
+                                 "PIC S9(8) COMP-3 VALUE ZERO"))
+        lines.append(_field_line(f"{_A}01  ", f"WS-{rpt}-CNT-D"[:30],
+                                 "PIC Z(7)9"))
+
+    return "\n".join(lines)
+
+
 def convert_file_def(source: str) -> str:
     """Generate FILE-CONTROL, FILE SECTION, and file-status WS from the full EZT source.
 
