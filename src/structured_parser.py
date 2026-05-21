@@ -341,11 +341,9 @@ def parse_preamble(source: str) -> Preamble:
         if first == "FILE":
             if len(tokens) < 2:
                 continue
-            # For FILE declarations scan the FULL line (cols 1-80) for the org
-            # keyword: long file names or spacing may push it past col 72 even
-            # though it is still part of the EZT code, not the sequence area.
-            # We stop scanning at the first 8-digit all-numeric token (sequence
-            # number) so it is never mistaken for a record length.
+            # join_continuations() already applied [:72] to every physical line,
+            # so 'line' contains only the code area (cols 1-72).  Scan it for
+            # the org keyword; stop at the first 8-digit all-numeric token.
             org = "DISK"
             rec_len = 0
             _CANONICAL = {"DISK", "VSAM", "TAPE", "PRINTER", "WORK"}
@@ -353,7 +351,7 @@ def parse_preamble(source: str) -> Preamble:
             _ALL_KEYS = sorted(
                 set(_ORG_ALIASES) | _CANONICAL, key=len, reverse=True
             )
-            for tok in raw_line.strip().split()[2:]:
+            for tok in line.strip().split()[2:]:
                 if len(tok) == 8 and tok.isdigit():
                     break           # reached the sequence-number field — stop
                 tok_up = tok.upper()
