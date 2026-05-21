@@ -41,6 +41,7 @@ class EZTWSSubfield:
     type: str     # N, A, P, B
     decimals: int = 0
     occurs: int = 0
+    value: Optional[str] = None
 
     @property
     def physical_bytes(self) -> int:
@@ -290,9 +291,9 @@ def _parse_ws_subfield(tokens: List[str], prev_end: int) -> Optional[EZTWSSubfie
     if ftype not in ("N", "A", "P", "B"):
         return None
 
-    decimals, _, occurs, _ = _parse_optional_attrs(tokens, dec_idx)
+    decimals, value, occurs, _ = _parse_optional_attrs(tokens, dec_idx)
     return EZTWSSubfield(name=name, start=start, length=length,
-                         type=ftype, decimals=decimals, occurs=occurs)
+                         type=ftype, decimals=decimals, occurs=occurs, value=value)
 
 
 def _parse_field(tokens: List[str], prev_end: int) -> Optional[EZTField]:

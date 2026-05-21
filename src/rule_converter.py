@@ -315,10 +315,15 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
                 gap = sf.start - cur
                 if gap > 0:
                     lines.append(_field_line(f"{_C}10  ", "FILLER", f"PIC X({gap})"))
-                lines.append(_field_line(
-                    f"{_C}10  ", sf.name[:30],
-                    _pic(sf.type, sf.length, sf.decimals) + _occurs(sf.occurs)
-                ))
+                sf_pic = _pic(sf.type, sf.length, sf.decimals) + _occurs(sf.occurs)
+                if sf.value is not None:
+                    if sf.type.upper() in ("N", "P", "B") and sf.value in ("0", ""):
+                        sf_pic += " VALUE ZERO"
+                    elif sf.type.upper() in ("N", "P", "B"):
+                        sf_pic += f" VALUE {sf.value}"
+                    else:
+                        sf_pic += f" VALUE '{sf.value}'"
+                lines.append(_field_line(f"{_C}10  ", sf.name[:30], sf_pic))
                 cur = sf.end + 1
             trailing = d.physical_bytes - cur + 1
             if trailing > 0:
