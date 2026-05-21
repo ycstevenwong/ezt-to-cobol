@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional, Tuple
 
+from src.structured_parser import join_continuations
+
 
 class SectionType(Enum):
     FILE_DEF = "file_definitions"
@@ -34,6 +36,7 @@ def _is_comment_or_blank(line: str) -> bool:
 
 def parse_ezt(source: str) -> List[EZTSection]:
     """Split EZT source into ordered logical sections."""
+    source = join_continuations(source)   # join '+' continuation lines, strip cols 73+
     lines = source.splitlines()
     sections: List[EZTSection] = []
     file_lines: List[str] = []
@@ -41,7 +44,7 @@ def parse_ezt(source: str) -> List[EZTSection]:
 
     i = 0
     while i < len(lines):
-        line = lines[i][:72]   # cols 73+ are sequence/id area — ignore
+        line = lines[i]   # already processed by join_continuations
 
         if _is_comment_or_blank(line):
             i += 1
@@ -93,11 +96,11 @@ def _collect_block(
 
     Blank and comment lines are always absorbed into the current block.
     """
-    block = [lines[start][:72]]
+    block = [lines[start]]
     i = start + 1
 
     while i < len(lines):
-        line = lines[i][:72]
+        line = lines[i]
 
         # Blank / comment lines always belong to the current block
         if _is_comment_or_blank(line):

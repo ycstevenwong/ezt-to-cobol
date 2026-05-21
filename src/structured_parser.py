@@ -81,6 +81,47 @@ def _blank_or_comment(line: str) -> bool:
     return not line.strip() or bool(_COMMENT.match(line))
 
 
+def join_continuations(source: str) -> str:
+    """Pre-process EZT source: join continuation lines and strip cols 73+.
+
+    EZT uses '+' at the end of a physical line as a continuation character.
+    Each physical line is first truncated to 72 columns (stripping the
+    sequence/identification area), then lines ending with '+' are joined
+    with their successor(s) to form a single logical line.
+
+    Example:
+      WS-DTE-TABLE W 39 A  +          <- continuation
+        VALUE '000031059091+           <- continuation inside VALUE
+               118121224327+
+               3304334365'
+    becomes one logical line:
+      WS-DTE-TABLE W 39 A  VALUE '0000310590911181212243273304334365'
+    """
+    physical = source.splitlines()
+    logical: List[str] = []
+    i = 0
+    while i < len(physical):
+        line = physical[i][:72]          # strip cols 73+
+        rstripped = line.rstrip()
+        if rstripped.endswith('+'):
+            parts = [rstripped[:-1]]     # remove continuation marker
+            i += 1
+            while i < len(physical):
+                cont = physical[i][:72].strip()
+                if cont.endswith('+'):
+                    parts.append(cont[:-1])
+                    i += 1
+                else:
+                    parts.append(cont)
+                    i += 1
+                    break
+            logical.append(''.join(parts))
+        else:
+            logical.append(line)
+            i += 1
+    return '\n'.join(logical)
+
+
 # Short-form EZT file organisation keywords → canonical name
 _ORG_ALIASES: dict = {
     "VS":      "VSAM",
@@ -136,7 +177,16 @@ def _parse_optional_attrs(tokens: List[str], start_idx: int):
     while i < len(tokens):
         t = tokens[i].upper()
         if t == "VALUE" and i + 1 < len(tokens):
-            value = tokens[i + 1].strip("'\"")
+            raw = tokens[i + 1]
+            # Strip EZT statement-terminator period that appears after the value.
+            # Rules: bare/numeric token ending in '.' → strip it.
+            #        quoted token ending in '.' or "." → strip the trailing period.
+            #        quoted token where period is inside quotes (e.g. 'A.') → keep.
+            if not raw.startswith(("'", '"')) and raw.endswith("."):
+                raw = raw[:-1]          # e.g. '0.' → '0'
+            elif (raw.endswith("'.") or raw.endswith('".')):
+                raw = raw[:-1]          # e.g. 'ABC'. → 'ABC'
+            value = raw.strip("'\"")
             i += 2
         elif t == "OCCURS" and i + 1 < len(tokens):
             try:
@@ -268,14 +318,14 @@ def parse_preamble(source: str) -> Preamble:
     A DEFINE or a W-marker field (name W length type) breaks the file association;
     subsequent W fields are added to defines as working-storage entries.
     """
+    source = join_continuations(source)
     result = Preamble()
     current_file: Optional[EZTFile] = None
     prev_end = 0
     ws_by_name: dict = {}   # name -> EZTDefine, for sub-field parent lookup
     ws_sub_end: dict = {}   # parent_name -> last sub-field end position
 
-    for raw_line in source.splitlines():
-        line = raw_line[:72]   # cols 73+ are sequence/id area — ignore
+    for line in source.splitlines():
         if _blank_or_comment(line):
             continue
         if _SECTION_BREAK.match(line):
