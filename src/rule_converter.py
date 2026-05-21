@@ -39,10 +39,8 @@ def _pic(ftype: str, length: int, decimals: int) -> str:
         int_d  = digits - decimals
         return f"PIC S9({int_d})V9({decimals}) COMP-3" if decimals else f"PIC S9({digits}) COMP-3"
     if t == "U":
-        # Unsigned packed decimal — same byte layout as P, no sign nibble.
-        digits = (length - 1) * 2 if length % 2 == 1 else length * 2 - 1
-        int_d  = digits - decimals
-        return f"PIC 9({int_d})V9({decimals}) COMP-3" if decimals else f"PIC 9({digits}) COMP-3"
+        # Unsigned numeric display — like N but explicitly unsigned, no COMP-3.
+        return f"PIC 9({length})"
     if t == "B":
         return f"PIC S9({length}) COMP"
     return f"PIC X({length})"
