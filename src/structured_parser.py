@@ -261,52 +261,6 @@ def _parse_field(tokens: List[str], prev_end: int) -> Optional[EZTField]:
                     type=ftype, decimals=decimals, occurs=occurs, heading=heading)
 
 
-def scan_ws_fields(content: str) -> Tuple[List[EZTDefine], str]:
-    """Scan arbitrary content for WS field declarations and strip them out.
-
-    Recognises DEFINE statements, W-marker fields, and their sub-fields so that
-    all WS declarations inside JOB/REPORT blocks are handled by Python, not the LLM.
-    Returns (defines, cleaned_content_with_ws_lines_removed).
-    """
-    defines: List[EZTDefine] = []
-    ws_by_name: dict = {}   # name -> EZTDefine, for sub-field parent lookup
-    ws_sub_end: dict = {}   # parent_name -> last sub-field end position
-    clean_lines: List[str] = []
-
-    for line in content.splitlines():
-        line = line[:72]       # cols 73+ are sequence/id area — ignore
-        tokens = line.strip().split()
-        if not tokens:
-            clean_lines.append(line)
-            continue
-
-        d = _parse_define(tokens)
-        if d:
-            defines.append(d)
-            ws_by_name[d.name] = d
-            ws_sub_end[d.name] = 0
-            continue
-
-        ws = _parse_ws_field(tokens)
-        if ws:
-            defines.append(ws)
-            ws_by_name[ws.name] = ws
-            ws_sub_end[ws.name] = 0
-            continue
-
-        if len(tokens) > 1 and tokens[1].upper() in ws_by_name:
-            parent_name = tokens[1].upper()
-            sf = _parse_ws_subfield(tokens, ws_sub_end.get(parent_name, 0))
-            if sf:
-                ws_by_name[parent_name].subfields.append(sf)
-                ws_sub_end[parent_name] = sf.end
-                continue
-
-        clean_lines.append(line)
-
-    return defines, "\n".join(clean_lines)
-
-
 def parse_preamble(source: str) -> Preamble:
     """Parse FILE definitions (with their record fields) and DEFINE/standalone WS variables.
 

@@ -91,36 +91,6 @@ You are an Easytrieve (EZT) to COBOL conversion specialist for IBM mainframe env
 {_GENERAL_RULES}
 """
 
-FILE_DEF_PROMPT = """\
-Convert these Easytrieve FILE definitions to COBOL.
-
-Output EXACTLY in this format — do NOT omit either delimiter line:
-
---- FILE-CONTROL ---
-[COBOL SELECT ... ASSIGN TO ... entries, one per file]
---- FILE-SECTION ---
-[COBOL FD entries and 01/05/10 record layouts, one FD block per file]
-
-Prior converted context:
-{context}
-
-EZT FILE definitions:
-{content}
-"""
-
-FIELD_DEF_PROMPT = """\
-Convert these Easytrieve field/variable definitions to COBOL WORKING-STORAGE entries.
-
-Output ONLY the 01-level (and subordinate) WORKING-STORAGE items — no SECTION header, \
-no explanations.
-
-Prior converted context (for reference):
-{context}
-
-EZT field/variable definitions:
-{content}
-"""
-
 JOB_PROMPT = """\
 Convert this Easytrieve JOB section to COBOL PROCEDURE DIVISION code.
 

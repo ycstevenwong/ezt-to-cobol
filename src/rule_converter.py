@@ -1,8 +1,8 @@
 """Rule-based COBOL generator for FILE_DEF and FIELD_DEF sections."""
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
-from src.structured_parser import EZTDefine, EZTField, EZTFile, parse_preamble, scan_ws_fields
+from src.structured_parser import EZTDefine, EZTField, EZTFile, parse_preamble
 
 # COBOL area indentation
 _A = " " * 7   # Area A (col 8)  — FD, 01-level
@@ -330,16 +330,6 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
 
 
 # ── Public API ──────────────────────────────────────────────────────────────────
-
-def hoist_ws_fields(content: str) -> Tuple[str, str]:
-    """Strip W-field declarations from JOB/REPORT content and convert them rule-based.
-
-    Returns (cleaned_content, ws_cobol).  ws_cobol is an empty string when no
-    W-fields are found, so the caller can skip the WS marker entirely.
-    """
-    defines, cleaned = scan_ws_fields(content)
-    return cleaned, gen_working_storage(defines)
-
 
 def convert_file_def(source: str) -> str:
     """Generate FILE-CONTROL, FILE SECTION, and file-status WS from the full EZT source.
