@@ -1,19 +1,21 @@
 """Orchestrate EZT-to-COBOL conversion: rule-based for structure, AI for logic."""
-from openai import OpenAI
+import requests as _requests
 from typing import Dict, List
 
 from src.parser import EZTSection, SectionType
 from src.prompts import SYSTEM_PROMPT, JOB_PROMPT, REPORT_PROMPT
 from src.rule_converter import convert_file_def, convert_field_def
 
-DEFAULT_MODEL = "llama3.2"
+DEFAULT_MODEL    = "llama3.2"
 DEFAULT_BASE_URL = "http://localhost:11434/v1"
-MAX_TOKENS = 8192
+DEFAULT_API_KEY  = "ollama"
+DEFAULT_TIMEOUT  = 60
+MAX_TOKENS       = 8192
 
 _RULE_BASED = {SectionType.FILE_DEF, SectionType.FIELD_DEF}
 
 _PROMPT_FOR_TYPE = {
-    SectionType.JOB: JOB_PROMPT,
+    SectionType.JOB:    JOB_PROMPT,
     SectionType.REPORT: REPORT_PROMPT,
 }
 
@@ -22,23 +24,42 @@ def _section_key(section: EZTSection) -> str:
     return f"{section.type.value}:{section.name}"
 
 
-def make_client(base_url: str = DEFAULT_BASE_URL) -> OpenAI:
-    """Create an OpenAI-compatible client pointed at Ollama."""
-    return OpenAI(base_url=base_url, api_key="ollama")
+def make_client(
+    base_url:   str  = DEFAULT_BASE_URL,
+    api_key:    str  = DEFAULT_API_KEY,
+    verify_ssl: bool = True,
+) -> dict:
+    """Return a connection-config dict for the LLM REST endpoint.
+
+    The returned dict is passed to convert_section / convert_all.
+    base_url should be the OpenAI-compatible root, e.g.
+      http://localhost:11434/v1   (Ollama)
+      https://api.openai.com/v1  (OpenAI)
+      https://your-internal-llm/v1
+    """
+    url = base_url.rstrip("/")
+    if not url.endswith("/chat/completions"):
+        url = f"{url}/chat/completions"
+    return {
+        "url":     url,
+        "headers": {
+            "Content-Type":  "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        "verify":  verify_ssl,
+    }
 
 
 def convert_section(
-    client: OpenAI,
+    client:  dict,
     section: EZTSection,
     context: str,
-    model: str = DEFAULT_MODEL,
+    model:   str  = DEFAULT_MODEL,
     verbose: bool = False,
 ) -> str:
-    """Call the model to convert one EZT section, returning raw COBOL text."""
+    """POST one EZT section to the LLM and return the raw COBOL response."""
     template = _PROMPT_FOR_TYPE[section.type]
-    # Use format_map with a fallback dict so that LLM-facing placeholders
-    # like {RPTNAME} and {FIELD} in report_scaffolding.yaml are kept as-is
-    # rather than raising KeyError when only {context} and {content} are supplied.
+
     class _SafeDict(dict):
         def __missing__(self, key: str) -> str:
             return f"{{{key}}}"
@@ -51,35 +72,33 @@ def convert_section(
     if verbose:
         print(f"  → [{section.type.value}] {section.name}", flush=True)
 
-    parts: List[str] = []
-    stream = client.chat.completions.create(
-        model=model,
-        max_tokens=MAX_TOKENS,
-        messages=[
+    body = {
+        "model":      model,
+        "max_tokens": MAX_TOKENS,
+        "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
+            {"role": "user",   "content": user_message},
         ],
-        stream=True,
+        "stream": False,
+    }
+
+    resp = _requests.post(
+        client["url"],
+        headers=client["headers"],
+        json=body,
+        timeout=DEFAULT_TIMEOUT,
+        verify=client.get("verify", True),
     )
-    for chunk in stream:
-        delta = chunk.choices[0].delta.content
-        if delta:
-            parts.append(delta)
-            if verbose:
-                print(delta, end="", flush=True)
-
-    if verbose:
-        print()
-
-    return "".join(parts).strip()
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"].strip()
 
 
 def convert_all(
-    client: OpenAI,
+    client:   dict,
     sections: List[EZTSection],
-    source: str,
-    model: str = DEFAULT_MODEL,
-    verbose: bool = False,
+    source:   str,
+    model:    str  = DEFAULT_MODEL,
+    verbose:  bool = False,
 ) -> Dict[str, str]:
     """Convert every EZT section.
 
@@ -104,8 +123,6 @@ def convert_all(
         key = _section_key(section)
         results[key] = cobol
         if section.type in _RULE_BASED:
-            # Prefix rule-based output so the LLM knows it is already in the
-            # DATA DIVISION and must not be reproduced in procedure code.
             context_chunks.append(
                 f"=== {section.type.value.upper()} ({section.name})"
                 f" — ALREADY IN DATA DIVISION, DO NOT REDECLARE ===\n{cobol}"

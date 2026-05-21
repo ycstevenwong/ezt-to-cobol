@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""CLI entry point: convert Easytrieve program(s) to COBOL via Ollama."""
+"""CLI entry point: convert Easytrieve program(s) to COBOL."""
 import sys
 from pathlib import Path
 
 import click
-from openai import APIConnectionError, APIStatusError
+import requests
 
 from src.parser import parse_ezt
-from src.converter import convert_all, make_client, DEFAULT_MODEL, DEFAULT_BASE_URL
+from src.converter import (
+    convert_all, make_client,
+    DEFAULT_MODEL, DEFAULT_BASE_URL, DEFAULT_API_KEY,
+)
 from src.assembler import assemble
 
 
 def _convert_one(
     input_file: Path,
     output: Path,
-    client,
+    client: dict,
     model: str,
     program_name: str | None,
     verbose: bool,
@@ -48,14 +51,18 @@ def _convert_one(
 
     try:
         converted = convert_all(client, sections, source, model=model, verbose=verbose)
-    except APIConnectionError:
+    except requests.exceptions.ConnectionError:
         click.echo(
-            f"Cannot connect to Ollama. Make sure Ollama is running (`ollama serve`).",
+            f"Cannot connect to LLM at {client['url']}. "
+            "Check the server is running and --base-url is correct.",
             err=True,
         )
         return False
-    except APIStatusError as exc:
-        click.echo(f"API error {exc.status_code}: {exc.message}", err=True)
+    except requests.exceptions.HTTPError as exc:
+        click.echo(f"HTTP error {exc.response.status_code}: {exc}", err=True)
+        return False
+    except requests.exceptions.Timeout:
+        click.echo("Request timed out. Try increasing --timeout or check the server.", err=True)
         return False
 
     cobol = assemble(sections, converted, program_name=prog_name)
@@ -86,13 +93,25 @@ def _convert_one(
     "--model",
     default=DEFAULT_MODEL,
     show_default=True,
-    help="Ollama model name (e.g. llama3.2, qwen2.5-coder, codellama)",
+    help="LLM model name (e.g. llama3.2, qwen2.5-coder, gpt-4o)",
 )
 @click.option(
     "--base-url",
     default=DEFAULT_BASE_URL,
     show_default=True,
-    help="Ollama server base URL",
+    help="LLM server base URL (OpenAI-compatible /v1 endpoint).",
+)
+@click.option(
+    "--api-key",
+    default=DEFAULT_API_KEY,
+    show_default=True,
+    help="API key sent in the Authorization header.",
+)
+@click.option(
+    "--no-verify",
+    is_flag=True,
+    default=False,
+    help="Disable SSL certificate verification (for self-signed certs).",
 )
 @click.option(
     "--program-name",
@@ -100,10 +119,11 @@ def _convert_one(
     help="COBOL PROGRAM-ID (only used when converting a single file).",
 )
 @click.option("-v", "--verbose", is_flag=True,
-              help="Stream section-by-section output to stderr.")
+              help="Show section-by-section progress to stderr.")
 @click.option("--dry-run", is_flag=True,
               help="Parse and show detected sections; do not call the model.")
-def main(input_files, output_dir, model, base_url, program_name, verbose, dry_run):
+def main(input_files, output_dir, model, base_url, api_key, no_verify,
+         program_name, verbose, dry_run):
     """Convert one or more Easytrieve (.ezt) programs to COBOL.
 
     INPUT_FILES: one or more .ezt source files.
@@ -111,20 +131,18 @@ def main(input_files, output_dir, model, base_url, program_name, verbose, dry_ru
     Each file is written to <name>.cbl in OUTPUT_DIR (or the same folder as
     the input if --output-dir is not given).  Use stdout by omitting
     --output-dir only when converting a single file without -o.
-
-    Requires Ollama running at BASE_URL (default: http://localhost:11434).
     """
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    client = make_client(base_url)
+    client = make_client(base_url=base_url, api_key=api_key, verify_ssl=not no_verify)
     ok = failed = 0
 
     for input_file in input_files:
         if output_dir:
             out = output_dir / (input_file.stem + ".cbl")
         elif len(input_files) == 1:
-            out = None          # single file → stdout (unless -o given)
+            out = None          # single file → stdout
         else:
             out = input_file.with_suffix(".cbl")
 
