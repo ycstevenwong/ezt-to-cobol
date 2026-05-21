@@ -36,10 +36,17 @@ def convert_section(
 ) -> str:
     """Call the model to convert one EZT section, returning raw COBOL text."""
     template = _PROMPT_FOR_TYPE[section.type]
-    user_message = template.format(
+    # Use format_map with a fallback dict so that LLM-facing placeholders
+    # like {RPTNAME} and {FIELD} in report_scaffolding.yaml are kept as-is
+    # rather than raising KeyError when only {context} and {content} are supplied.
+    class _SafeDict(dict):
+        def __missing__(self, key: str) -> str:
+            return f"{{{key}}}"
+
+    user_message = template.format_map(_SafeDict(
         context=context or "(none yet — this is the first section)",
         content=section.content,
-    )
+    ))
 
     if verbose:
         print(f"  → [{section.type.value}] {section.name}", flush=True)
