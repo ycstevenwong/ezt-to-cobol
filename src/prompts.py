@@ -125,34 +125,52 @@ EZT JOB section:
 """
 
 REPORT_PROMPT = f"""\
-Convert this Easytrieve REPORT section to IBM Enterprise COBOL PROCEDURE DIVISION paragraphs.
+Convert this Easytrieve REPORT section to IBM Enterprise COBOL PROCEDURE DIVISION code.
 
 {_REPORT_SCAFFOLDING}
 
 ━━ WHAT TO OUTPUT ━━
-Output ONLY executable PROCEDURE DIVISION paragraphs — headings, detail print,
-control-break logic, end-of-report.  No explanations, no markdown fences.
+Output ONLY the PROCEDURE DIVISION paragraphs — headings, detail print,
+control-break logic, end-of-report.
+No explanations, no markdown fences.
 
 ━━ WHAT NOT TO OUTPUT ━━
 Do NOT output WORKING-STORAGE SECTION or any data declarations (01-level items,
-PIC clauses, VALUE clauses, REDEFINES, etc.).
+REDEFINES, PIC clauses, VALUE clauses, etc.).
 The DATA DIVISION is already complete — Python has already generated:
   WS-PAGE-CTR, WS-LINE-CTR, WS-PAGE-LIMIT, WS-LINE-LIMIT, PRINT-REC
   WS-{{FIELD}}-TOT, WS-{{FIELD}}-TOT-D  (for each SUM field)
   WS-{{RPTNAME}}-CNT, WS-{{RPTNAME}}-CNT-D  (if COUNT present)
 
 ━━ IBM ENTERPRISE COBOL STANDARDS ━━
-Column layout:
-  • Paragraph names → Area A, column 8
-  • Statements → Area B, column 12 (or deeper for nesting)
-  • Nothing in columns 73+
+Column layout (fixed format):
+  • Paragraph names and division/section headers → Area A, column 8
+  • All executable statements → Area B, column 12 (or deeper for nesting)
+  • Nothing in columns 73+ (identification area — leave blank)
 
-Period (full stop) rules:
-  • ONE period ends each paragraph (on the last statement only)
+Period (full stop) rules — the most critical COBOL rule:
+  • ONE period ends each paragraph: place it only on the LAST statement of the paragraph
   • NEVER put a period inside IF / EVALUATE / PERFORM / READ / WRITE blocks
-  • Use scope terminators: END-IF, END-EVALUATE, END-PERFORM, END-READ, END-WRITE
+  • Structured delimiters END-IF, END-EVALUATE, END-PERFORM, END-READ, END-WRITE
+    terminate those blocks — the period comes only after the outermost END-xxx
 
-Inline PERFORM must have END-PERFORM.
+Structured statements — always use scope terminators:
+  • IF ... ELSE ... END-IF          (no period inside)
+  • EVALUATE ... WHEN ... END-EVALUATE
+  • PERFORM ... END-PERFORM         (inline PERFORM must have END-PERFORM)
+  • READ ... AT END ... END-READ
+  • WRITE ... INVALID KEY ... END-WRITE
+
+Correct paragraph structure example:
+       {{RPTNAME}}-DETAIL.
+           MOVE CUSTNO   TO WS-DTL-CUSTNO
+           MOVE CUSTNAME TO WS-DTL-CUSTNAME
+           WRITE PRINT-REC FROM WS-{{RPTNAME}}-DTL
+               AFTER ADVANCING 1 LINE
+           ADD 1 TO WS-LINE-CTR
+           IF WS-LINE-CTR >= WS-LINE-LIMIT
+               PERFORM {{RPTNAME}}-HEADINGS
+           END-IF.
 
 Prior converted context:
 {{context}}
