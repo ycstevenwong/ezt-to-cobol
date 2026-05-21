@@ -40,6 +40,9 @@ def _pic(ftype: str, length: int, decimals: int) -> str:
         return f"PIC S9({int_d})V9({decimals}) COMP-3" if decimals else f"PIC S9({digits}) COMP-3"
     if t == "U":
         # Unsigned numeric display — like N but explicitly unsigned, no COMP-3.
+        if decimals:
+            int_d = length - decimals
+            return f"PIC 9({int_d})V9({decimals})"
         return f"PIC 9({length})"
     if t == "B":
         return f"PIC S9({length}) COMP"
