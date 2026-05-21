@@ -38,6 +38,11 @@ def _pic(ftype: str, length: int, decimals: int) -> str:
         digits = (length - 1) * 2 if length % 2 == 1 else length * 2 - 1
         int_d  = digits - decimals
         return f"PIC S9({int_d})V9({decimals}) COMP-3" if decimals else f"PIC S9({digits}) COMP-3"
+    if t == "U":
+        # Unsigned packed decimal — same byte layout as P, no sign nibble.
+        digits = (length - 1) * 2 if length % 2 == 1 else length * 2 - 1
+        int_d  = digits - decimals
+        return f"PIC 9({int_d})V9({decimals}) COMP-3" if decimals else f"PIC 9({digits}) COMP-3"
     if t == "B":
         return f"PIC S9({length}) COMP"
     return f"PIC X({length})"
@@ -290,9 +295,9 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
     for d in defines:
         pic_str = _pic(d.type, d.length, d.decimals)
         if d.value is not None:
-            if d.type.upper() in ("N", "P", "B") and d.value in ("0", ""):
+            if d.type.upper() in ("N", "P", "B", "U") and d.value in ("0", ""):
                 val_clause = " VALUE ZERO"
-            elif d.type.upper() in ("N", "P", "B"):
+            elif d.type.upper() in ("N", "P", "B", "U"):
                 val_clause = f" VALUE {d.value}"
             else:
                 val_clause = f" VALUE '{d.value}'"
@@ -317,9 +322,9 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
                     lines.append(_field_line(f"{_C}10  ", "FILLER", f"PIC X({gap})"))
                 sf_pic = _pic(sf.type, sf.length, sf.decimals) + _occurs(sf.occurs)
                 if sf.value is not None:
-                    if sf.type.upper() in ("N", "P", "B") and sf.value in ("0", ""):
+                    if sf.type.upper() in ("N", "P", "B", "U") and sf.value in ("0", ""):
                         sf_pic += " VALUE ZERO"
-                    elif sf.type.upper() in ("N", "P", "B"):
+                    elif sf.type.upper() in ("N", "P", "B", "U"):
                         sf_pic += f" VALUE {sf.value}"
                     else:
                         sf_pic += f" VALUE '{sf.value}'"

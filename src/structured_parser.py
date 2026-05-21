@@ -241,7 +241,7 @@ def _parse_ws_field(tokens: List[str]) -> Optional[EZTDefine]:
     except ValueError:
         return None
     ftype = tokens[3].upper()
-    if ftype not in ("N", "A", "P", "B"):
+    if ftype not in ("N", "A", "P", "B", "U"):
         return None
     name = tokens[0].upper()
     decimals, value, occurs, _ = _parse_optional_attrs(tokens, 4)
@@ -288,7 +288,7 @@ def _parse_ws_subfield(tokens: List[str], prev_end: int) -> Optional[EZTWSSubfie
         ftype = tokens[3].upper() if len(tokens) > 3 else ""
         dec_idx = 4
 
-    if ftype not in ("N", "A", "P", "B"):
+    if ftype not in ("N", "A", "P", "B", "U"):
         return None
 
     decimals, value, occurs, _ = _parse_optional_attrs(tokens, dec_idx)
@@ -301,7 +301,7 @@ def _parse_field(tokens: List[str], prev_end: int) -> Optional[EZTField]:
         return None
     name = tokens[0]
     ftype = tokens[3].upper()
-    if ftype not in ("N", "A", "P", "B"):
+    if ftype not in ("N", "A", "P", "B", "U"):
         return None
     try:
         length = int(tokens[2])
