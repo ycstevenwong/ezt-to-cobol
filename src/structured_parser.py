@@ -224,31 +224,82 @@ def _parse_optional_attrs(tokens: List[str], start_idx: int):
     return decimals, value, occurs, heading
 
 
+_DEFINE_TYPES = frozenset({"N", "A", "P", "B", "U"})
+
+
 def _parse_define(tokens: List[str]) -> Optional[EZTDefine]:
     """Parse a DEFINE statement.
 
-    Two supported forms:
-      DEFINE name type length [...]       — traditional
-      DEFINE name W length type [...]     — W working-storage marker before length
+    Supported forms (tried in order):
+      DEFINE name W      length type [...]    — W working-storage marker
+      DEFINE name WORK   length type [...]    — WORK storage keyword
+      DEFINE name WORK W length type [...]    — WORK + W marker
+      DEFINE name parent [+offset] length type — subfield of a named parent
+      DEFINE name type length [...]           — traditional
     """
     if len(tokens) < 4 or tokens[0].upper() != "DEFINE":
         return None
     name = tokens[1].upper()
-    if len(tokens) > 2 and tokens[2].upper() == "W":
-        # WS-style: W is a positional marker, not the data type
+    t2 = tokens[2].upper() if len(tokens) > 2 else ""
+
+    if t2 == "W":
+        # DEFINE name W length type [VALUE v]
         try:
             length = int(tokens[3])
         except (ValueError, IndexError):
             return None
         ftype = tokens[4].upper() if len(tokens) > 4 else "A"
         attrs_start = 5
+
+    elif t2 == "WORK":
+        t3 = tokens[3].upper() if len(tokens) > 3 else ""
+        if t3 == "W":
+            # DEFINE name WORK W length type
+            try:
+                length = int(tokens[4])
+            except (ValueError, IndexError):
+                return None
+            ftype = tokens[5].upper() if len(tokens) > 5 else "N"
+            attrs_start = 6
+        else:
+            # DEFINE name WORK length type  (W implied)
+            try:
+                length = int(tokens[3])
+            except (ValueError, IndexError):
+                return None
+            ftype = tokens[4].upper() if len(tokens) > 4 else "A"
+            attrs_start = 5
+
+    elif t2 not in _DEFINE_TYPES:
+        # tokens[2] is not a recognised type letter — treat as a parent field
+        # reference: DEFINE name parent [+offset] length type
+        t3 = tokens[3] if len(tokens) > 3 else ""
+        if t3.startswith("+"):
+            # DEFINE name parent +offset length type
+            try:
+                length = int(tokens[4])
+            except (ValueError, IndexError):
+                return None
+            ftype = tokens[5].upper() if len(tokens) > 5 else "A"
+            attrs_start = 6
+        else:
+            # DEFINE name parent length type
+            try:
+                length = int(tokens[3])
+            except (ValueError, IndexError):
+                return None
+            ftype = tokens[4].upper() if len(tokens) > 4 else "A"
+            attrs_start = 5
+
     else:
-        ftype = tokens[2].upper()
+        # Traditional: DEFINE name type length [VALUE v]
+        ftype = t2
         try:
             length = int(tokens[3])
         except ValueError:
             return None
         attrs_start = 4
+
     decimals, value, occurs, _ = _parse_optional_attrs(tokens, attrs_start)
     return EZTDefine(name=name, type=ftype, length=length,
                      decimals=decimals, value=value, occurs=occurs)
@@ -406,11 +457,20 @@ def parse_preamble(source: str) -> Preamble:
 
         elif first == "DEFINE":
             current_file = None
-            d = _parse_define(tokens)
-            if d:
-                result.defines.append(d)
-                ws_by_name[d.name] = d
-                ws_sub_end[d.name] = 0
+            t2 = tokens[2].upper() if len(tokens) > 2 else ""
+            if t2 in ws_by_name:
+                # DEFINE name known-parent [...] — subfield of an existing DEFINE
+                parent_name = t2
+                sf = _parse_ws_subfield(tokens[1:], ws_sub_end.get(parent_name, 0))
+                if sf:
+                    ws_by_name[parent_name].subfields.append(sf)
+                    ws_sub_end[parent_name] = sf.end
+            else:
+                d = _parse_define(tokens)
+                if d:
+                    result.defines.append(d)
+                    ws_by_name[d.name] = d
+                    ws_sub_end[d.name] = 0
 
         elif len(tokens) > 1 and tokens[1].upper() == "W":
             current_file = None
