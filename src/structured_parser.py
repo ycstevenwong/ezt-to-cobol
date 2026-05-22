@@ -109,6 +109,10 @@ def join_continuations(source: str) -> str:
             i += 1
             while i < len(physical):
                 cont = physical[i][:72].strip()
+                # Skip blank lines and comments embedded in a continuation sequence.
+                if not cont or cont.startswith(('*', '//')):
+                    i += 1
+                    continue
                 if cont.endswith('+'):
                     parts.append(cont[:-1])
                     i += 1

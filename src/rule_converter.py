@@ -335,7 +335,15 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
             if trailing > 0:
                 lines.append(_field_line(f"{_C}10  ", "FILLER", f"PIC X({trailing})"))
         else:
-            lines.append(f"{_A}01  {d.name:<33} {pic_str}{val_clause}{_occurs(d.occurs)}.")
+            full_line = f"{_A}01  {d.name:<33} {pic_str}{val_clause}{_occurs(d.occurs)}."
+            if len(full_line) <= 72 or not val_clause:
+                lines.append(full_line)
+            else:
+                # VALUE clause pushes the line past IBM COBOL's 72-column fixed-format
+                # limit.  Put the PIC clause on line 1 (no period) and the VALUE
+                # clause on a continuation line indented to Area B.
+                lines.append(f"{_A}01  {d.name:<33} {pic_str}{_occurs(d.occurs)}")
+                lines.append(f"{_B}{val_clause.lstrip()}.")
 
     return "\n".join(lines)
 
