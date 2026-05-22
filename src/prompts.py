@@ -117,6 +117,32 @@ Correct paragraph structure example:
                AT END MOVE 'Y' TO WS-EOF
            END-READ.
 
+━━ FILE OPEN / CLOSE RULES ━━
+Every file must be opened in a dedicated OPEN-FILES paragraph and closed
+in a CLOSE-FILES paragraph.
+
+After every OPEN statement check the file-status field (WS-<filename>-STATUS).
+If it is greater than '00' the open failed — display a message and STOP RUN.
+
+       OPEN-FILES.
+           OPEN INPUT INFILE
+           IF WS-INFILE-STATUS > '00'
+               DISPLAY 'ERROR OPENING INFILE STATUS: ' WS-INFILE-STATUS
+               STOP RUN
+           END-IF
+           OPEN OUTPUT OUTFILE
+           IF WS-OUTFILE-STATUS > '00'
+               DISPLAY 'ERROR OPENING OUTFILE STATUS: ' WS-OUTFILE-STATUS
+               STOP RUN
+           END-IF.
+
+       CLOSE-FILES.
+           CLOSE INFILE
+           CLOSE OUTFILE.
+
+Use the exact WS-<FILENAME>-STATUS field names that appear in the DATA DIVISION
+context below — they are already declared as PIC X(2) VALUE SPACES.
+
 Prior converted context (DATA DIVISION already generated):
 {context}
 
