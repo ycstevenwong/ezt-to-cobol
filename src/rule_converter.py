@@ -169,13 +169,18 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
                     lines.append(_field_line(child_prefix, "FILLER",
                                              f"PIC X({filler_bytes})"))
         elif node.children and depth <= 2:
-            # Field with sub-fields: emit as elementary + named REDEFINES group.
-            # Using a plain group (same name) would duplicate the field name at
-            # an adjacent level, which causes COBOL compile errors.
-            lines.append(_field_line(prefix, fname, _pic(f.type, f.length, f.decimals)))
-            redef_name = (f.name + "-FIELDS")[:30]
-            lines.append(f"{prefix}{redef_name} REDEFINES {fname}.")
-            lines.extend(_render_subtree(node.children, depth + 1, f.start, f.end))
+            one_end = f.start + f.length - 1   # end of a single occurrence
+            if f.occurs:
+                # IBM COBOL forbids REDEFINES of an OCCURS item at the same level.
+                # Render as a plain group with OCCURS so sub-fields nest inside it.
+                lines.append(f"{prefix}{fname} OCCURS {f.occurs} TIMES.")
+                lines.extend(_render_subtree(node.children, depth + 1, f.start, one_end))
+            else:
+                # Field with sub-fields: emit as elementary + named REDEFINES group.
+                lines.append(_field_line(prefix, fname, _pic(f.type, f.length, f.decimals)))
+                redef_name = (f.name + "-FIELDS")[:30]
+                lines.append(f"{prefix}{redef_name} REDEFINES {fname}.")
+                lines.extend(_render_subtree(node.children, depth + 1, f.start, one_end))
         elif node.children:
             # Plain group (depth > 2, level 15+)
             lines.append(f"{prefix}{fname}.")
@@ -199,8 +204,8 @@ def _record_layout(file: EZTFile) -> List[str]:
     if not roots:
         return [f"{_A}01  {file.name}-REC."]
 
-    if len(roots) == 1 and roots[0].children:
-        # Single enclosing field with sub-fields → single 01, two-05 structure:
+    if len(roots) == 1 and roots[0].children and not roots[0].field.occurs:
+        # Single enclosing field with sub-fields (no OCCURS) → single 01, two-05 structure:
         #   05 ROOT-FULL   PIC X(n).
         #   05 FILE-FIELDS REDEFINES ROOT-FULL.
         #      10 ...

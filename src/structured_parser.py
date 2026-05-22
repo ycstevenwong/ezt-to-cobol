@@ -405,8 +405,9 @@ def parse_preamble(source: str, already_joined: bool = False) -> Preamble:
     result = Preamble()
     current_file: Optional[EZTFile] = None
     prev_end = 0
-    ws_by_name: dict = {}   # name -> EZTDefine, for sub-field parent lookup
-    ws_sub_end: dict = {}   # parent_name -> last sub-field end position
+    ws_by_name: dict = {}    # name -> EZTDefine, for WS sub-field parent lookup
+    ws_sub_end: dict = {}    # parent_name -> last WS sub-field end position
+    file_sub_end: dict = {}  # file-field name -> last inline sub-field end position
 
     for line in source.splitlines():
         if _blank_or_comment(line):
@@ -486,9 +487,42 @@ def parse_preamble(source: str, already_joined: bool = False) -> Preamble:
                 ws_sub_end[parent_name] = sf.end
 
         elif current_file is not None:
-            f = _parse_field(tokens, prev_end)
-            if f:
-                current_file.fields.append(f)
-                prev_end = f.end
+            # Check for parent-name inline sub-field: name parent [+offset] length type
+            t1 = tokens[1].upper() if len(tokens) > 1 else ""
+            parent_fld = None
+            if t1 and t1 != "*" and not tokens[1].lstrip("+").isdigit():
+                parent_fld = next(
+                    (ff for ff in current_file.fields if ff.name == t1), None
+                )
+            if parent_fld is not None:
+                t2 = tokens[2] if len(tokens) > 2 else ""
+                try:
+                    if t2.startswith("+"):
+                        # name parent +offset length type [dec]
+                        start  = parent_fld.start + int(t2[1:])
+                        length = int(tokens[3])
+                        ftype  = tokens[4].upper() if len(tokens) > 4 else "A"
+                        dec_idx = 5
+                    else:
+                        # name parent length type [dec]  (sequential within parent)
+                        prev_in = file_sub_end.get(t1, parent_fld.start - 1)
+                        start  = prev_in + 1
+                        length = int(tokens[2])
+                        ftype  = tokens[3].upper() if len(tokens) > 3 else "A"
+                        dec_idx = 4
+                    decimals, _, _, heading = _parse_optional_attrs(tokens, dec_idx)
+                    sf = EZTField(name=tokens[0].upper(), start=start,
+                                  length=length, type=ftype,
+                                  decimals=decimals, heading=heading)
+                    current_file.fields.append(sf)
+                    prev_end = sf.end
+                    file_sub_end[t1] = sf.end
+                except (ValueError, IndexError):
+                    pass
+            else:
+                f = _parse_field(tokens, prev_end)
+                if f:
+                    current_file.fields.append(f)
+                    prev_end = f.end
 
     return result
