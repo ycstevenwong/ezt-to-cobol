@@ -168,7 +168,11 @@ Structured statements — always use scope terminators:
   • READ ... AT END ... END-READ
   • WRITE ... INVALID KEY ... END-WRITE
 
-Correct paragraph structure example:
+Paragraph exit convention — every paragraph must have a matching exit paragraph:
+  • Name it <PARA-NAME>-EXIT and place it immediately after the paragraph body.
+  • The exit paragraph contains only the single word EXIT followed by a period.
+  • This applies to every paragraph that can be PERFORMed.
+
        PROCESS-RECORD.
            IF WS-STATUS = 'A'
                PERFORM WRITE-OUTPUT
@@ -179,6 +183,13 @@ Correct paragraph structure example:
            READ INPUT-FILE
                AT END MOVE 'Y' TO WS-EOF
            END-READ.
+       PROCESS-RECORD-EXIT.
+           EXIT.
+
+       WRITE-OUTPUT.
+           WRITE OUTPUT-REC FROM WS-OUTPUT-LINE.
+       WRITE-OUTPUT-EXIT.
+           EXIT.
 
 ━━ FILE OPEN / CLOSE RULES ━━
 Every file must be opened in a dedicated OPEN-FILES paragraph and closed
@@ -250,7 +261,11 @@ Structured statements — always use scope terminators:
   • READ ... AT END ... END-READ
   • WRITE ... INVALID KEY ... END-WRITE
 
-Correct paragraph structure example:
+Paragraph exit convention — every paragraph must have a matching exit paragraph:
+  • Name it <PARA-NAME>-EXIT and place it immediately after the paragraph body.
+  • The exit paragraph contains only the single word EXIT followed by a period.
+  • This applies to every paragraph that can be PERFORMed.
+
        {{RPTNAME}}-DETAIL.
            MOVE CUSTNO   TO WS-DTL-CUSTNO
            MOVE CUSTNAME TO WS-DTL-CUSTNAME
@@ -260,6 +275,8 @@ Correct paragraph structure example:
            IF WS-LINE-CTR >= WS-LINE-LIMIT
                PERFORM {{RPTNAME}}-HEADINGS
            END-IF.
+       {{RPTNAME}}-DETAIL-EXIT.
+           EXIT.
 
 Prior converted context:
 {{context}}
