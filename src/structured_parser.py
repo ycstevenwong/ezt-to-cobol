@@ -102,7 +102,14 @@ def join_continuations(source: str) -> str:
     logical: List[str] = []
     i = 0
     while i < len(physical):
-        line = physical[i][:72]          # strip cols 73+
+        line_raw = physical[i]
+        # Strip cols 73+ only when they look like an EZT sequence-number area
+        # (digits or spaces).  Lines that are already joined logical lines may
+        # have meaningful content past col 72 and must not be truncated.
+        if len(line_raw) > 72 and all(c.isdigit() or c in ' \t' for c in line_raw[72:]):
+            line = line_raw[:72]
+        else:
+            line = line_raw
         rstripped = line.rstrip()
         if rstripped.endswith('+'):
             parts = [rstripped[:-1]]     # remove continuation marker
