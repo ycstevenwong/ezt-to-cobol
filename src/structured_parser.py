@@ -225,16 +225,31 @@ def _parse_optional_attrs(tokens: List[str], start_idx: int):
 
 
 def _parse_define(tokens: List[str]) -> Optional[EZTDefine]:
-    """Parse a DEFINE statement: DEFINE name type length [decimals] [VALUE v] [OCCURS n]."""
+    """Parse a DEFINE statement.
+
+    Two supported forms:
+      DEFINE name type length [...]       — traditional
+      DEFINE name W length type [...]     — W working-storage marker before length
+    """
     if len(tokens) < 4 or tokens[0].upper() != "DEFINE":
         return None
     name = tokens[1].upper()
-    ftype = tokens[2].upper()
-    try:
-        length = int(tokens[3])
-    except ValueError:
-        return None
-    decimals, value, occurs, _ = _parse_optional_attrs(tokens, 4)
+    if len(tokens) > 2 and tokens[2].upper() == "W":
+        # WS-style: W is a positional marker, not the data type
+        try:
+            length = int(tokens[3])
+        except (ValueError, IndexError):
+            return None
+        ftype = tokens[4].upper() if len(tokens) > 4 else "A"
+        attrs_start = 5
+    else:
+        ftype = tokens[2].upper()
+        try:
+            length = int(tokens[3])
+        except ValueError:
+            return None
+        attrs_start = 4
+    decimals, value, occurs, _ = _parse_optional_attrs(tokens, attrs_start)
     return EZTDefine(name=name, type=ftype, length=length,
                      decimals=decimals, value=value, occurs=occurs)
 
