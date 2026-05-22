@@ -27,6 +27,9 @@ def _occurs(n: int) -> str:
 def _pic(ftype: str, length: int, decimals: int) -> str:
     t = ftype.upper()
     if t == "N":
+        if decimals:
+            int_d = length - decimals
+            return f"PIC 9({int_d})V9({decimals})"
         return f"PIC 9({length})"
     if t == "A":
         return f"PIC X({length})"
