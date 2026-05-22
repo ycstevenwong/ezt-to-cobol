@@ -141,7 +141,6 @@ Convert this Easytrieve JOB section to IBM Enterprise COBOL PROCEDURE DIVISION c
 ━━ WHAT TO OUTPUT ━━
 Output ONLY the PROCEDURE DIVISION content, starting with:
        PROCEDURE DIVISION.
-Include all paragraphs: OPEN/CLOSE, main READ loop, processing logic, STOP RUN.
 No explanations, no markdown fences.
 
 ━━ WHAT NOT TO OUTPUT ━━
@@ -149,73 +148,90 @@ Do NOT output WORKING-STORAGE SECTION or any data declarations (01-level items,
 REDEFINES, PIC clauses, VALUE clauses, etc.).
 The DATA DIVISION is already complete — executable statements only.
 
-━━ IBM ENTERPRISE COBOL STANDARDS ━━
-Column layout (fixed format):
-  • Paragraph names and division/section headers → Area A, column 8
-  • All executable statements → Area B, column 12 (or deeper for nesting)
-  • Nothing in columns 73+ (identification area — leave blank)
+━━ REQUIRED PROGRAM STRUCTURE ━━
+The PROCEDURE DIVISION must always begin with a MAIN-PROCESS paragraph that
+orchestrates the entire program by PERFORMing lower-level paragraphs in order.
+Every PERFORM must use the THRU form so the exit paragraph is included.
+STOP RUN must appear only inside MAIN-PROCESS, never in any other paragraph.
 
-Period (full stop) rules — the most critical COBOL rule:
-  • ONE period ends each paragraph: place it only on the LAST statement of the paragraph
-  • NEVER put a period inside IF / EVALUATE / PERFORM / READ / WRITE blocks
-  • Structured delimiters END-IF, END-EVALUATE, END-PERFORM, END-READ, END-WRITE
-    terminate those blocks — the period comes only after the outermost END-xxx
-
-Structured statements — always use scope terminators:
-  • IF ... ELSE ... END-IF          (no period inside)
-  • EVALUATE ... WHEN ... END-EVALUATE
-  • PERFORM ... END-PERFORM         (inline PERFORM must have END-PERFORM)
-  • READ ... AT END ... END-READ
-  • WRITE ... INVALID KEY ... END-WRITE
-
-Paragraph exit convention — every paragraph must have a matching exit paragraph:
-  • Name it <PARA-NAME>-EXIT and place it immediately after the paragraph body.
-  • The exit paragraph contains only the single word EXIT followed by a period.
-  • This applies to every paragraph that can be PERFORMed.
-
-       PROCESS-RECORD.
-           IF WS-STATUS = 'A'
-               PERFORM WRITE-OUTPUT
-               ADD 1 TO WS-COUNTER
-           ELSE
-               ADD 1 TO WS-SKIP-CTR
-           END-IF
-           READ INPUT-FILE
-               AT END MOVE 'Y' TO WS-EOF
-           END-READ.
-       PROCESS-RECORD-EXIT.
+       PROCEDURE DIVISION.
+       MAIN-PROCESS.
+           PERFORM OPEN-FILES  THRU OPEN-FILES-EXIT
+           PERFORM MAIN-LOGIC  THRU MAIN-LOGIC-EXIT
+           PERFORM CLOSE-FILES THRU CLOSE-FILES-EXIT
+           STOP RUN.
+       MAIN-PROCESS-EXIT.
            EXIT.
-
-       WRITE-OUTPUT.
-           WRITE OUTPUT-REC FROM WS-OUTPUT-LINE.
-       WRITE-OUTPUT-EXIT.
-           EXIT.
-
-━━ FILE OPEN / CLOSE RULES ━━
-Every file must be opened in a dedicated OPEN-FILES paragraph and closed
-in a CLOSE-FILES paragraph.
-
-After every OPEN statement check the file-status field (WS-<filename>-STATUS).
-If it is greater than '00' the open failed — display a message and STOP RUN.
 
        OPEN-FILES.
            OPEN INPUT INFILE
            IF WS-INFILE-STATUS > '00'
                DISPLAY 'ERROR OPENING INFILE STATUS: ' WS-INFILE-STATUS
                STOP RUN
-           END-IF
-           OPEN OUTPUT OUTFILE
-           IF WS-OUTFILE-STATUS > '00'
-               DISPLAY 'ERROR OPENING OUTFILE STATUS: ' WS-OUTFILE-STATUS
-               STOP RUN
            END-IF.
+       OPEN-FILES-EXIT.
+           EXIT.
+
+       MAIN-LOGIC.
+           READ INFILE
+               AT END MOVE 'Y' TO WS-EOF
+           END-READ
+           PERFORM UNTIL WS-EOF = 'Y'
+               PERFORM PROCESS-RECORD THRU PROCESS-RECORD-EXIT
+               READ INFILE
+                   AT END MOVE 'Y' TO WS-EOF
+               END-READ
+           END-PERFORM.
+       MAIN-LOGIC-EXIT.
+           EXIT.
+
+       PROCESS-RECORD.
+           ... processing logic ...
+       PROCESS-RECORD-EXIT.
+           EXIT.
 
        CLOSE-FILES.
-           CLOSE INFILE
-           CLOSE OUTFILE.
+           CLOSE INFILE.
+       CLOSE-FILES-EXIT.
+           EXIT.
 
-Use the exact WS-<FILENAME>-STATUS field names that appear in the DATA DIVISION
-context below — they are already declared as PIC X(2) VALUE SPACES.
+Conditional paragraphs — omit when not applicable:
+  • If the program has NO input or output files (e.g. JOB INPUT NULL), omit
+    OPEN-FILES and CLOSE-FILES entirely and remove their PERFORM calls from
+    MAIN-PROCESS.
+  • If there is no file-reading loop (batch compute only), omit MAIN-LOGIC's
+    READ loop and replace it with the processing statements directly.
+
+━━ IBM ENTERPRISE COBOL STANDARDS ━━
+Column layout (fixed format):
+  • Paragraph names → Area A, column 8
+  • All executable statements → Area B, column 12 (or deeper for nesting)
+  • Nothing in columns 73+ (identification area — leave blank)
+
+Period (full stop) rules — the most critical COBOL rule:
+  • ONE period ends each paragraph: place it only on the LAST statement
+  • NEVER put a period inside IF / EVALUATE / PERFORM / READ / WRITE blocks
+  • Structured delimiters END-IF, END-EVALUATE, END-PERFORM, END-READ, END-WRITE
+    terminate those blocks — the period comes only after the outermost END-xxx
+
+Structured statements — always use scope terminators:
+  • IF ... ELSE ... END-IF
+  • EVALUATE ... WHEN ... END-EVALUATE
+  • PERFORM ... END-PERFORM
+  • READ ... AT END ... END-READ
+  • WRITE ... INVALID KEY ... END-WRITE
+
+Paragraph exit convention:
+  • Every paragraph must be followed immediately by <PARA-NAME>-EXIT.
+  • The exit paragraph contains only EXIT.
+  • Every PERFORM must use the THRU form: PERFORM para THRU para-EXIT.
+  • Applies to every paragraph including OPEN-FILES, CLOSE-FILES, MAIN-LOGIC, etc.
+
+File open / close:
+  • OPEN-FILES: after each OPEN, check WS-<FILENAME>-STATUS > '00';
+    if true, DISPLAY an error message and STOP RUN.
+  • CLOSE-FILES: one CLOSE statement per file, nothing else.
+  • Use the exact WS-<FILENAME>-STATUS names from the DATA DIVISION context.
 
 Prior converted context (DATA DIVISION already generated):
 {context}
@@ -264,6 +280,7 @@ Structured statements — always use scope terminators:
 Paragraph exit convention — every paragraph must have a matching exit paragraph:
   • Name it <PARA-NAME>-EXIT and place it immediately after the paragraph body.
   • The exit paragraph contains only the single word EXIT followed by a period.
+  • Every PERFORM must use the THRU form: PERFORM para THRU para-EXIT.
   • This applies to every paragraph that can be PERFORMed.
 
        {{RPTNAME}}-DETAIL.
@@ -273,7 +290,7 @@ Paragraph exit convention — every paragraph must have a matching exit paragrap
                AFTER ADVANCING 1 LINE
            ADD 1 TO WS-LINE-CTR
            IF WS-LINE-CTR >= WS-LINE-LIMIT
-               PERFORM {{RPTNAME}}-HEADINGS
+               PERFORM {{RPTNAME}}-HEADINGS THRU {{RPTNAME}}-HEADINGS-EXIT
            END-IF.
        {{RPTNAME}}-DETAIL-EXIT.
            EXIT.
