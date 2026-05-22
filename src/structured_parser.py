@@ -102,14 +102,7 @@ def join_continuations(source: str) -> str:
     logical: List[str] = []
     i = 0
     while i < len(physical):
-        line_raw = physical[i]
-        # Strip cols 73+ only when they look like an EZT sequence-number area
-        # (digits or spaces).  Lines that are already joined logical lines may
-        # have meaningful content past col 72 and must not be truncated.
-        if len(line_raw) > 72 and all(c.isdigit() or c in ' \t' for c in line_raw[72:]):
-            line = line_raw[:72]
-        else:
-            line = line_raw
+        line = physical[i][:72]   # always strip the cols 73+ identification area
         rstripped = line.rstrip()
         if rstripped.endswith('+'):
             parts = [rstripped[:-1]]     # remove continuation marker
@@ -396,14 +389,19 @@ def _parse_field(tokens: List[str], prev_end: int) -> Optional[EZTField]:
                     type=ftype, decimals=decimals, occurs=occurs, heading=heading)
 
 
-def parse_preamble(source: str) -> Preamble:
+def parse_preamble(source: str, already_joined: bool = False) -> Preamble:
     """Parse FILE definitions (with their record fields) and DEFINE/standalone WS variables.
 
     Associates field definition lines with whichever FILE statement preceded them.
     A DEFINE or a W-marker field (name W length type) breaks the file association;
     subsequent W fields are added to defines as working-storage entries.
+
+    already_joined=True skips the join_continuations call for callers that have
+    already processed the source (e.g. convert_field_def, which receives content
+    already produced by parse_ezt).
     """
-    source = join_continuations(source)
+    if not already_joined:
+        source = join_continuations(source)
     result = Preamble()
     current_file: Optional[EZTFile] = None
     prev_end = 0

@@ -430,6 +430,7 @@ def convert_field_def(field_def_content: str) -> str:
     """Generate WORKING-STORAGE entries from FIELD_DEF content.
 
     Handles both DEFINE statements and standalone WS fields (name type length).
+    Content has already been processed by parse_ezt (join_continuations applied).
     """
-    preamble = parse_preamble(field_def_content)
+    preamble = parse_preamble(field_def_content, already_joined=True)
     return gen_working_storage(preamble.defines)
