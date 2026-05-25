@@ -147,10 +147,36 @@ You are an Easytrieve (EZT) to COBOL conversion specialist for IBM mainframe env
 JOB_PROMPT = """\
 Convert this Easytrieve JOB section to IBM Enterprise COBOL PROCEDURE DIVISION code.
 
-━━ WHAT TO OUTPUT ━━
-Output ONLY the PROCEDURE DIVISION content. The very first characters of
-your response must be "       PROCEDURE DIVISION." — nothing before it.
+━━ OUTPUT FORMAT ━━
+Your response must consist of exactly two marker-delimited blocks in this order:
+
+--- WORKING-STORAGE ---
+[any 01-level WS items the procedure code below references that are NOT
+ already in the provided DATA DIVISION context; leave this block empty
+ if none are needed]
+--- PROCEDURE ---
+       PROCEDURE DIVISION.
+       [procedure code]
+
+The first characters of your response must be "--- WORKING-STORAGE ---".
 Stop immediately after the last COBOL line; do not add a closing summary.
+
+━━ WORKING-STORAGE BLOCK ━━
+The DATA DIVISION context above already provides file structures, file
+status fields (WS-{FILENAME}-STATUS), and items from FIELD_DEF / DEFINE.
+Declare a new 01-level item in the WORKING-STORAGE block ONLY when the
+procedure code references a variable that is NOT in the provided context.
+
+Common cases that need a declaration:
+  • WS-EOF flag for AT END inside a READ loop (e.g. 01 WS-EOF PIC X VALUE 'N'.)
+  • Work fields for intermediate COMPUTE results
+  • Save areas for control-break logic
+  • Local counters or accumulators not covered by file/field definitions
+
+Rules for the WORKING-STORAGE block:
+  • Do NOT duplicate items already in the provided context.
+  • Do NOT include the "WORKING-STORAGE SECTION." header — only 01-level items.
+  • Use standard column layout (01 at col 8).
 
 ━━ WHAT NOT TO OUTPUT ━━
 Do NOT output any of the following:
@@ -158,9 +184,9 @@ Do NOT output any of the following:
   • Preamble such as "Here is the conversion:" or "I'll convert this..."
   • Explanations, summaries, or commentary after the code
   • Markdown fences (```), headings, or any non-COBOL text
-  • WORKING-STORAGE SECTION or any data declarations (01-level items,
-    REDEFINES, PIC clauses, VALUE clauses, etc.) — the DATA DIVISION is
-    already complete; emit executable statements only.
+  • IDENTIFICATION / ENVIRONMENT / DATA DIVISION headers
+  • FILE SECTION, WORKING-STORAGE SECTION, or LINKAGE SECTION headers
+  • Any item already defined in the provided DATA DIVISION context
 
 ━━ REQUIRED PROGRAM STRUCTURE ━━
 The PROCEDURE DIVISION must always begin with a MAIN-PROCESS paragraph that
@@ -168,6 +194,9 @@ orchestrates the entire program by PERFORMing lower-level paragraphs in order.
 Every PERFORM must use the THRU form so the exit paragraph is included.
 STOP RUN must appear only inside MAIN-PROCESS, never in any other paragraph.
 
+--- WORKING-STORAGE ---
+       01  WS-EOF                          PIC X VALUE 'N'.
+--- PROCEDURE ---
        PROCEDURE DIVISION.
        MAIN-PROCESS.
            PERFORM OPEN-FILES  THRU OPEN-FILES-EXIT
@@ -259,11 +288,40 @@ Convert this Easytrieve REPORT section to IBM Enterprise COBOL PROCEDURE DIVISIO
 
 {_REPORT_SCAFFOLDING}
 
-━━ WHAT TO OUTPUT ━━
-Output ONLY the PROCEDURE DIVISION paragraphs — headings, detail print,
-control-break logic, end-of-report. The first character of your response
-must be the first character of the first COBOL paragraph. Stop immediately
-after the last COBOL line; do not add a closing summary.
+━━ OUTPUT FORMAT ━━
+Your response must consist of exactly two marker-delimited blocks in this order:
+
+--- WORKING-STORAGE ---
+[any 01-level WS items the procedure code below references that are NOT
+ already in the provided DATA DIVISION context; leave this block empty
+ if none are needed]
+--- PROCEDURE ---
+       [report procedure paragraphs — headings, detail print, control-break
+        logic, end-of-report]
+
+The first characters of your response must be "--- WORKING-STORAGE ---".
+Stop immediately after the last COBOL line; do not add a closing summary.
+
+━━ WORKING-STORAGE BLOCK ━━
+Python has already generated these items in the DATA DIVISION context —
+do NOT redeclare them:
+  WS-PAGE-CTR, WS-LINE-CTR, WS-PAGE-LIMIT, WS-LINE-LIMIT, PRINT-REC
+  WS-{{FIELD}}-TOT, WS-{{FIELD}}-TOT-D  (for each SUM field)
+  WS-{{RPTNAME}}-CNT, WS-{{RPTNAME}}-CNT-D  (if COUNT present)
+
+Declare a new 01-level item in the WORKING-STORAGE block ONLY when the
+procedure code references a variable that is NOT in the provided context.
+
+Common cases that need a declaration:
+  • WS-{{RPTNAME}}-HDR / WS-{{RPTNAME}}-DTL print-line layouts
+  • Control-break save areas (e.g. WS-PREV-{{FIELD}})
+  • Edit-mask (PIC Z…) display fields not covered by SUM/COUNT
+  • Work fields for intermediate COMPUTE results
+
+Rules for the WORKING-STORAGE block:
+  • Do NOT duplicate items already in the provided context.
+  • Do NOT include the "WORKING-STORAGE SECTION." header — only 01-level items.
+  • Use standard column layout (01 at col 8).
 
 ━━ WHAT NOT TO OUTPUT ━━
 Do NOT output any of the following:
@@ -271,12 +329,9 @@ Do NOT output any of the following:
   • Preamble such as "Here is the conversion:" or "I'll convert this..."
   • Explanations, summaries, or commentary after the code
   • Markdown fences (```), headings, or any non-COBOL text
-  • WORKING-STORAGE SECTION or any data declarations (01-level items,
-    REDEFINES, PIC clauses, VALUE clauses, etc.).
-The DATA DIVISION is already complete — Python has already generated:
-  WS-PAGE-CTR, WS-LINE-CTR, WS-PAGE-LIMIT, WS-LINE-LIMIT, PRINT-REC
-  WS-{{FIELD}}-TOT, WS-{{FIELD}}-TOT-D  (for each SUM field)
-  WS-{{RPTNAME}}-CNT, WS-{{RPTNAME}}-CNT-D  (if COUNT present)
+  • IDENTIFICATION / ENVIRONMENT / DATA DIVISION headers
+  • FILE SECTION, WORKING-STORAGE SECTION, or LINKAGE SECTION headers
+  • Any item already defined in the provided DATA DIVISION context
 
 ━━ IBM ENTERPRISE COBOL STANDARDS ━━
 Column layout (fixed format):

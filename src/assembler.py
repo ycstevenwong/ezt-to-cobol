@@ -68,20 +68,34 @@ def _split_file_def(cobol: str) -> Tuple[str, str, str]:
     return "\n".join(fc_lines).strip(), "\n".join(fs_lines).strip(), ""
 
 
-def _split_report(cobol: str) -> Tuple[str, str]:
-    """Split REPORT output into optional WS additions and procedure code."""
-    ws_marker = re.compile(r"^---\s*WORKING-STORAGE\s*---", re.IGNORECASE | re.MULTILINE)
-    proc_marker = re.compile(r"^---\s*PROCEDURE\s*---", re.IGNORECASE | re.MULTILINE)
+def _split_ws_proc(cobol: str) -> Tuple[str, str]:
+    """Split LLM output into optional WS additions and procedure code.
+
+    Expected format from JOB / REPORT prompts:
+        --- WORKING-STORAGE ---
+        [optional 01-level items]
+        --- PROCEDURE ---
+        [procedure code]
+
+    If markers are missing, returns ("", cobol) — i.e. treats the whole
+    response as procedure code.
+    """
+    ws_marker = re.compile(r"^\s*---\s*WORKING-STORAGE\s*---\s*$",
+                           re.IGNORECASE | re.MULTILINE)
+    proc_marker = re.compile(r"^\s*---\s*PROCEDURE\s*---\s*$",
+                             re.IGNORECASE | re.MULTILINE)
 
     ws_m = ws_marker.search(cobol)
     pr_m = proc_marker.search(cobol)
 
-    if ws_m and pr_m:
-        ws_text = cobol[ws_m.end(): pr_m.start()].strip()
-        proc_text = cobol[pr_m.end():].strip()
+    if ws_m and pr_m and ws_m.end() <= pr_m.start():
+        # Use strip('\n') instead of strip() — preserve Area A indentation on
+        # the first line of each block; we only want to drop surrounding blank lines.
+        ws_text = cobol[ws_m.end(): pr_m.start()].strip('\n')
+        proc_text = cobol[pr_m.end():].strip('\n')
         return ws_text, proc_text
 
-    return "", cobol.strip()
+    return "", cobol.strip('\n')
 
 
 def _strip_division_header(cobol: str, header_pattern: str) -> str:
@@ -145,13 +159,20 @@ def assemble(
             ws_parts.append(clean)
 
         elif section.type == SectionType.JOB:
+            # LLM may include an optional --- WORKING-STORAGE --- block before
+            # --- PROCEDURE --- for variables it references (e.g. WS-EOF).
+            llm_ws, proc = _split_ws_proc(cobol)
+            if llm_ws:
+                ws_parts.append(_strip_division_header(
+                    llm_ws, r"^\s*WORKING-STORAGE SECTION\.\s*$"
+                ))
             # Take only what comes after PROCEDURE DIVISION header, discarding
             # any DATA DIVISION content the LLM may have emitted before it.
             proc_m = re.search(
-                r"^\s*PROCEDURE DIVISION[\w\s]*\.\s*$", cobol,
+                r"^\s*PROCEDURE DIVISION[\w\s]*\.\s*$", proc,
                 re.IGNORECASE | re.MULTILINE,
             )
-            clean_proc = cobol[proc_m.end():].strip("\n") if proc_m else cobol.strip("\n")
+            clean_proc = proc[proc_m.end():].strip("\n") if proc_m else proc.strip("\n")
             # Safety net: strip any data declarations the LLM still emitted
             clean_proc = _strip_data_decls(clean_proc)
             if clean_proc:
@@ -162,8 +183,15 @@ def assemble(
             py_ws = gen_report_ws(section.name, section.content)
             if py_ws:
                 ws_parts.append(py_ws)
-            # LLM generates only procedure paragraphs — strip any WS it emits anyway
-            clean_proc = _strip_data_decls(cobol)
+            # LLM may include an optional --- WORKING-STORAGE --- block for
+            # report-specific items (print-line layouts, control-break save areas).
+            llm_ws, proc = _split_ws_proc(cobol)
+            if llm_ws:
+                ws_parts.append(_strip_division_header(
+                    llm_ws, r"^\s*WORKING-STORAGE SECTION\.\s*$"
+                ))
+            # Safety net: strip any data declarations that leaked into the proc body.
+            clean_proc = _strip_data_decls(proc)
             if clean_proc:
                 procedure_parts.append(clean_proc)
 
