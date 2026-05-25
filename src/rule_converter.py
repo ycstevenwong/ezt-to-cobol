@@ -413,6 +413,45 @@ def gen_report_ws(report_name: str, content: str) -> str:
     return "\n".join(lines)
 
 
+_VSAM_KEY_LEN = 5   # default synthetic-key length when EZT doesn't supply one
+
+
+def _inject_vsam_key(file: EZTFile) -> EZTFile:
+    """For a VSAM file, prepend a synthetic alphanumeric key field named
+    <FILENAME>-KEY at position 1, shift every existing field down by the
+    key length, and grow the record length to match.
+
+    This makes the SELECT clause's  RECORD KEY IS <FILENAME>-KEY  resolve
+    to a real field in the FD record layout.  If the EZT source already
+    defines a field with that name (case-insensitive), the file passes
+    through unchanged — the EZT-supplied key wins.
+    """
+    if file.org != "VSAM":
+        return file
+    key_name = (file.name + "-KEY")[:30]
+    if any(f.name.upper() == key_name.upper() for f in file.fields):
+        return file
+    key_field = EZTField(name=key_name, start=1, length=_VSAM_KEY_LEN, type="A")
+    shifted = [
+        EZTField(
+            name=f.name,
+            start=f.start + _VSAM_KEY_LEN,
+            length=f.length,
+            type=f.type,
+            decimals=f.decimals,
+            occurs=f.occurs,
+            heading=f.heading,
+        )
+        for f in file.fields
+    ]
+    return EZTFile(
+        name=file.name,
+        org=file.org,
+        rec_length=file.rec_length + _VSAM_KEY_LEN if file.rec_length else 0,
+        fields=[key_field] + shifted,
+    )
+
+
 def convert_file_def(source: str) -> str:
     """Generate FILE-CONTROL, FILE SECTION, and file-status WS from the full EZT source.
 
@@ -422,9 +461,10 @@ def convert_file_def(source: str) -> str:
       --- WORKING-STORAGE --- file-status 01-level fields
     """
     preamble = parse_preamble(source)
-    fc = gen_file_control(preamble.files)
-    fs = gen_file_section(preamble.files)
-    ws = gen_file_status_ws(preamble.files)
+    files = [_inject_vsam_key(f) for f in preamble.files]
+    fc = gen_file_control(files)
+    fs = gen_file_section(files)
+    ws = gen_file_status_ws(files)
     return (f"--- FILE-CONTROL ---\n{fc}\n"
             f"--- FILE-SECTION ---\n{fs}\n"
             f"--- WORKING-STORAGE ---\n{ws}")
