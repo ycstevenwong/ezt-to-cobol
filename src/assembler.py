@@ -234,21 +234,107 @@ def assemble(
 # Any line longer than 72 chars must be continued:
 #   - current line ends at or before col 72
 #   - next line has '-' in col 7, content resumes in Area B (col 12)
+#
+# Special handling when the break falls inside a quoted literal:
+#   - close the quote on line 1
+#   - continuation line has '-' in col 7 and re-opens with a fresh quote
+#     in Area B (e.g.  'A LONG STRING THAT WOULD'
+#                     -     'OVERFLOW THE LINE').
 
 _MAX_COL = 72
 _CONT_PREFIX = " " * 6 + "-" + " " * 4   # cols 1-6 blank, col 7 '-', cols 8-11 blank
+
+
+def _find_literal_ranges(line: str) -> List[Tuple[int, int]]:
+    """Return (open_pos, close_pos) of each quoted literal in the line.
+
+    Tracks single and double quotes; doubled quotes ('' or "") inside a
+    literal are treated as escaped quote characters, not as terminators.
+    Positions are 0-based; if the literal is unclosed, close_pos is the
+    final character index of the line.
+    """
+    ranges: List[Tuple[int, int]] = []
+    i, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        if c in ("'", '"'):
+            quote = c
+            start = i
+            i += 1
+            while i < n:
+                if line[i] == quote:
+                    if i + 1 < n and line[i + 1] == quote:
+                        i += 2          # escaped quote inside the literal
+                        continue
+                    break
+                i += 1
+            ranges.append((start, i if i < n else n - 1))
+            i += 1
+        else:
+            i += 1
+    return ranges
 
 
 def _wrap_line(line: str) -> List[str]:
     """Wrap a single line to fit within _MAX_COL using COBOL continuation."""
     if len(line) <= _MAX_COL:
         return [line]
-    # Prefer to break at a space so we don't split a token
-    break_at = line.rfind(" ", 7, _MAX_COL)
-    if break_at <= 6:           # no usable space — force hard break
-        break_at = _MAX_COL
-    first = line[:break_at]
-    rest = line[break_at:].lstrip(" ")
+
+    literal_ranges = _find_literal_ranges(line)
+
+    def in_literal(pos: int) -> bool:
+        return any(s < pos < e for s, e in literal_ranges)
+
+    # Prefer a break at a space OUTSIDE any quoted literal so we don't
+    # split a token or the contents of a literal.  Restrict the search
+    # to positions in Area B (col 12+, index 11+) so we never break
+    # inside a continuation prefix (which would not reduce line length
+    # and would loop forever).
+    break_at = -1
+    for i in range(_MAX_COL - 1, 11, -1):
+        if line[i] == " " and not in_literal(i):
+            break_at = i
+            break
+
+    if break_at > 11:
+        first = line[:break_at]
+        rest = line[break_at:].lstrip(" ")
+        return [first] + _wrap_line(_CONT_PREFIX + rest)
+
+    # No safe break outside a literal — the literal itself must be split.
+    # Close the quote on line 1, '-' continuation, fresh quote on line 2.
+    # Closing the quote costs one char, so the latest position we can
+    # close at is _MAX_COL - 1 (leaving 1 char for the quote = col 72).
+    # Pick any literal that extends to at least col 72 — that includes
+    # one whose closing quote is itself at col 72 with trailing tokens
+    # (e.g. period) overflowing onto col 73+.
+    containing = next(
+        ((s, e) for s, e in literal_ranges if s < _MAX_COL and e >= _MAX_COL - 1),
+        None,
+    )
+    if containing is not None:
+        s, _e = containing
+        quote = line[s]
+        # Prefer to close at the last space inside the literal so we don't
+        # split a word; fall back to hard-breaking at col 71 otherwise.
+        # Lower bound must be > 11 so the close-and-reopen still shortens
+        # the line (the continuation prefix itself is 11 chars).
+        close_at = -1
+        for i in range(_MAX_COL - 1, max(s, 11), -1):
+            if line[i] == " ":
+                close_at = i
+                break
+        if close_at > max(s, 11):
+            first = line[:close_at] + quote          # close before the space
+            rest  = quote + line[close_at + 1:]      # reopen, drop the space
+        else:
+            first = line[:_MAX_COL - 1] + quote      # hard close at col 71
+            rest  = quote + line[_MAX_COL - 1:]
+        return [first] + _wrap_line(_CONT_PREFIX + rest)
+
+    # No literal containing col 72 and no usable space — force hard break.
+    first = line[:_MAX_COL]
+    rest = line[_MAX_COL:].lstrip(" ")
     return [first] + _wrap_line(_CONT_PREFIX + rest)
 
 
