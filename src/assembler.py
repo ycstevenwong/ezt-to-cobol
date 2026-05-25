@@ -140,10 +140,8 @@ def assemble(
     for section in sections:
         key = _section_key(section)
         cobol = (converted.get(key) or "").strip('\n')
-        if not cobol:
-            continue
 
-        if section.type == SectionType.FILE_DEF:
+        if section.type == SectionType.FILE_DEF and cobol:
             fc, fs, ws = _split_file_def(cobol)
             if fc:
                 file_control_parts.append(fc)
@@ -152,48 +150,39 @@ def assemble(
             if ws:
                 ws_parts.append(ws)
 
-        elif section.type == SectionType.FIELD_DEF:
+        elif section.type == SectionType.FIELD_DEF and cobol:
             clean = _strip_division_header(
                 cobol, r"^\s*WORKING-STORAGE SECTION\.\s*$"
             )
             ws_parts.append(clean)
 
-        elif section.type == SectionType.JOB:
-            # LLM may include an optional --- WORKING-STORAGE --- block before
-            # --- PROCEDURE --- for variables it references (e.g. WS-EOF).
-            llm_ws, proc = split_ws_proc(cobol)
-            if llm_ws:
-                ws_parts.append(_strip_division_header(
-                    llm_ws, r"^\s*WORKING-STORAGE SECTION\.\s*$"
-                ))
-            # Take only what comes after PROCEDURE DIVISION header, discarding
-            # any DATA DIVISION content the LLM may have emitted before it.
-            proc_m = re.search(
-                r"^\s*PROCEDURE DIVISION[\w\s]*\.\s*$", proc,
-                re.IGNORECASE | re.MULTILINE,
-            )
-            clean_proc = proc[proc_m.end():].strip("\n") if proc_m else proc.strip("\n")
-            # Safety net: strip any data declarations the LLM still emitted
-            clean_proc = _strip_data_decls(clean_proc)
-            if clean_proc:
-                procedure_parts.append(clean_proc)
-
         elif section.type == SectionType.REPORT:
-            # Python generates fixed WS (counters, accumulators) deterministically
+            # Python generates fixed report WS (counters, accumulators)
+            # deterministically; this stays per-report.  The LLM-generated
+            # procedure code is in the COMBINED_LOGIC key, not here.
             py_ws = gen_report_ws(section.name, section.content)
             if py_ws:
                 ws_parts.append(py_ws)
-            # LLM may include an optional --- WORKING-STORAGE --- block for
-            # report-specific items (print-line layouts, control-break save areas).
-            llm_ws, proc = split_ws_proc(cobol)
-            if llm_ws:
-                ws_parts.append(_strip_division_header(
-                    llm_ws, r"^\s*WORKING-STORAGE SECTION\.\s*$"
-                ))
-            # Safety net: strip any data declarations that leaked into the proc body.
-            clean_proc = _strip_data_decls(proc)
-            if clean_proc:
-                procedure_parts.append(clean_proc)
+        # JOB sections contribute nothing here — their procedure code
+        # comes from the combined-logic LLM call below.
+
+    # Single combined JOB+REPORT LLM result — extract WS additions and
+    # the unified PROCEDURE DIVISION exactly once.
+    combined = (converted.get("logic:combined") or "").strip("\n")
+    if combined:
+        llm_ws, proc = split_ws_proc(combined)
+        if llm_ws:
+            ws_parts.append(_strip_division_header(
+                llm_ws, r"^\s*WORKING-STORAGE SECTION\.\s*$"
+            ))
+        proc_m = re.search(
+            r"^\s*PROCEDURE DIVISION[\w\s]*\.\s*$", proc,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        clean_proc = proc[proc_m.end():].strip("\n") if proc_m else proc.strip("\n")
+        clean_proc = _strip_data_decls(clean_proc)
+        if clean_proc:
+            procedure_parts.append(clean_proc)
 
     # Build each division
     # COBOL PROGRAM-ID: letters, digits, hyphens only — strip anything else

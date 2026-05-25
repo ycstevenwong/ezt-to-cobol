@@ -4,7 +4,7 @@ from typing import Dict, List
 
 from src.assembler import split_ws_proc
 from src.parser import EZTSection, SectionType
-from src.prompts import SYSTEM_PROMPT, JOB_PROMPT, REPORT_PROMPT
+from src.prompts import SYSTEM_PROMPT, LOGIC_PROMPT
 from src.rule_converter import convert_file_def, convert_field_def
 
 DEFAULT_MODEL    = "llama3.2"
@@ -15,14 +15,19 @@ MAX_TOKENS       = 8192
 
 _RULE_BASED = {SectionType.FILE_DEF, SectionType.FIELD_DEF}
 
-_PROMPT_FOR_TYPE = {
-    SectionType.JOB:    JOB_PROMPT,
-    SectionType.REPORT: REPORT_PROMPT,
-}
+# Synthetic key for the single combined JOB+REPORT LLM result in the
+# converted-output dict.  The assembler looks for this key after iterating
+# the rule-based sections.
+COMBINED_LOGIC_KEY = "logic:combined"
 
 
 def _section_key(section: EZTSection) -> str:
     return f"{section.type.value}:{section.name}"
+
+
+class _SafeDict(dict):
+    def __missing__(self, key: str) -> str:
+        return f"{{{key}}}"
 
 
 def make_client(
@@ -32,7 +37,7 @@ def make_client(
 ) -> dict:
     """Return a connection-config dict for the LLM REST endpoint.
 
-    The returned dict is passed to convert_section / convert_all.
+    The returned dict is passed to convert_logic / convert_all.
     base_url should be the OpenAI-compatible root, e.g.
       http://localhost:11434/v1   (Ollama)
       https://api.openai.com/v1  (OpenAI)
@@ -51,27 +56,34 @@ def make_client(
     }
 
 
-def convert_section(
-    client:  dict,
-    section: EZTSection,
-    context: str,
-    model:   str  = DEFAULT_MODEL,
-    verbose: bool = False,
+def convert_logic(
+    client:   dict,
+    sections: List[EZTSection],
+    context:  str,
+    model:    str  = DEFAULT_MODEL,
+    verbose:  bool = False,
 ) -> str:
-    """POST one EZT section to the LLM and return the raw COBOL response."""
-    template = _PROMPT_FOR_TYPE[section.type]
+    """POST the combined JOB + REPORT logic to the LLM in a single call.
 
-    class _SafeDict(dict):
-        def __missing__(self, key: str) -> str:
-            return f"{{{key}}}"
+    The LLM sees every executable section at once and emits one unified
+    PROCEDURE DIVISION, which avoids the previous duplication where REPORT
+    re-emitted paragraphs it had seen in JOB's prior output.
+    """
+    content_blocks = []
+    for s in sections:
+        content_blocks.append(
+            f"--- EZT {s.type.value.upper()} ({s.name}) ---\n{s.content}"
+        )
+    combined_content = "\n\n".join(content_blocks)
 
-    user_message = template.format_map(_SafeDict(
-        context=context or "(none yet — this is the first section)",
-        content=section.content,
+    user_message = LOGIC_PROMPT.format_map(_SafeDict(
+        context=context or "(none yet — no rule-based sections)",
+        content=combined_content,
     ))
 
     if verbose:
-        print(f"  → [{section.type.value}] {section.name}", flush=True)
+        names = ", ".join(f"{s.type.value}:{s.name}" for s in sections)
+        print(f"  → [logic] combined call for {names}", flush=True)
 
     body = {
         "model":      model,
@@ -104,40 +116,35 @@ def convert_all(
     """Convert every EZT section.
 
     FILE_DEF and FIELD_DEF are converted deterministically via rule_converter.
-    JOB and REPORT sections are sent to the LLM with accumulated context.
+    All JOB and REPORT sections are converted together in a single LLM call
+    so the model sees the full program at once and emits one unified
+    PROCEDURE DIVISION with no duplicated paragraphs.
     """
     results: Dict[str, str] = {}
     context_chunks: List[str] = []
 
+    # 1. Rule-based sections (FILE_DEF + FIELD_DEF) first, in order.
     for section in sections:
-        if section.type in _RULE_BASED:
-            if section.type == SectionType.FILE_DEF:
-                cobol = convert_file_def(source)
-            else:
-                cobol = convert_field_def(section.content)
-            if verbose:
-                print(f"  → [{section.type.value}] {section.name} (rule-based)", flush=True)
+        if section.type not in _RULE_BASED:
+            continue
+        if section.type == SectionType.FILE_DEF:
+            cobol = convert_file_def(source)
         else:
-            context = "\n\n".join(context_chunks)
-            cobol = convert_section(client, section, context, model=model, verbose=verbose)
+            cobol = convert_field_def(section.content)
+        if verbose:
+            print(f"  → [{section.type.value}] {section.name} (rule-based)", flush=True)
+        results[_section_key(section)] = cobol
+        context_chunks.append(
+            f"=== {section.type.value.upper()} ({section.name})"
+            f" — ALREADY IN DATA DIVISION, DO NOT REDECLARE ===\n{cobol}"
+        )
 
-        key = _section_key(section)
-        results[key] = cobol
-        if section.type in _RULE_BASED:
-            context_chunks.append(
-                f"=== {section.type.value.upper()} ({section.name})"
-                f" — ALREADY IN DATA DIVISION, DO NOT REDECLARE ===\n{cobol}"
-            )
-        else:
-            # Keep only the WS additions from JOB/REPORT in cross-section context.
-            # Leaking the procedure code forward causes the next section's LLM
-            # call to re-emit or extend those paragraphs, duplicating the logic.
-            llm_ws, _ = split_ws_proc(cobol)
-            if llm_ws.strip():
-                context_chunks.append(
-                    f"=== {section.type.value.upper()} ({section.name})"
-                    f" — ALREADY DECLARED IN WORKING-STORAGE, DO NOT REDECLARE ==="
-                    f"\n{llm_ws}"
-                )
+    # 2. Single combined LLM call for every JOB + REPORT section.
+    logic_sections = [s for s in sections if s.type not in _RULE_BASED]
+    if logic_sections:
+        context = "\n\n".join(context_chunks)
+        results[COMBINED_LOGIC_KEY] = convert_logic(
+            client, logic_sections, context, model=model, verbose=verbose
+        )
 
     return results
