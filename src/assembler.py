@@ -68,7 +68,7 @@ def _split_file_def(cobol: str) -> Tuple[str, str, str]:
     return "\n".join(fc_lines).strip(), "\n".join(fs_lines).strip(), ""
 
 
-def _split_ws_proc(cobol: str) -> Tuple[str, str]:
+def split_ws_proc(cobol: str) -> Tuple[str, str]:
     """Split LLM output into optional WS additions and procedure code.
 
     Expected format from JOB / REPORT prompts:
@@ -161,7 +161,7 @@ def assemble(
         elif section.type == SectionType.JOB:
             # LLM may include an optional --- WORKING-STORAGE --- block before
             # --- PROCEDURE --- for variables it references (e.g. WS-EOF).
-            llm_ws, proc = _split_ws_proc(cobol)
+            llm_ws, proc = split_ws_proc(cobol)
             if llm_ws:
                 ws_parts.append(_strip_division_header(
                     llm_ws, r"^\s*WORKING-STORAGE SECTION\.\s*$"
@@ -185,7 +185,7 @@ def assemble(
                 ws_parts.append(py_ws)
             # LLM may include an optional --- WORKING-STORAGE --- block for
             # report-specific items (print-line layouts, control-break save areas).
-            llm_ws, proc = _split_ws_proc(cobol)
+            llm_ws, proc = split_ws_proc(cobol)
             if llm_ws:
                 ws_parts.append(_strip_division_header(
                     llm_ws, r"^\s*WORKING-STORAGE SECTION\.\s*$"

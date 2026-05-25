@@ -2,6 +2,7 @@
 import requests as _requests
 from typing import Dict, List
 
+from src.assembler import split_ws_proc
 from src.parser import EZTSection, SectionType
 from src.prompts import SYSTEM_PROMPT, JOB_PROMPT, REPORT_PROMPT
 from src.rule_converter import convert_file_def, convert_field_def
@@ -128,6 +129,15 @@ def convert_all(
                 f" — ALREADY IN DATA DIVISION, DO NOT REDECLARE ===\n{cobol}"
             )
         else:
-            context_chunks.append(f"=== {section.type.value.upper()} ({section.name}) ===\n{cobol}")
+            # Keep only the WS additions from JOB/REPORT in cross-section context.
+            # Leaking the procedure code forward causes the next section's LLM
+            # call to re-emit or extend those paragraphs, duplicating the logic.
+            llm_ws, _ = split_ws_proc(cobol)
+            if llm_ws.strip():
+                context_chunks.append(
+                    f"=== {section.type.value.upper()} ({section.name})"
+                    f" — ALREADY DECLARED IN WORKING-STORAGE, DO NOT REDECLARE ==="
+                    f"\n{llm_ws}"
+                )
 
     return results
