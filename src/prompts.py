@@ -154,6 +154,18 @@ You are an Easytrieve (EZT) to COBOL conversion specialist for IBM mainframe env
 3. COBOL-85 compatible syntax.
 4. Prefix working-storage items with WS-.
 5. Prefix record fields with a short file abbreviation (e.g. CUST- for CUSTFILE).
+6. PIC length must fit the VALUE — count the literal character by character,
+   including every punctuation mark, parenthesis, hyphen, slash, and space.
+   The quotes themselves are NOT counted; everything between them IS.
+   Examples (count silently before writing the PIC):
+     VALUE '(CC1164)'   → 8 chars  → PIC X(08)
+     VALUE 'A/B-C 12'   → 8 chars  → PIC X(08)
+     VALUE 'YES'        → 3 chars  → PIC X(03)
+     VALUE 12345        → 5 digits → PIC 9(05)
+     VALUE -99.95       → S9(02)V9(02)  (sign is implicit, not counted)
+   When PIC < literal length the value is silently truncated by the compiler.
+   When PIC > literal length the value is padded (spaces for X, zeros for 9) —
+   that is acceptable but never undersize the PIC.
 
 {_GENERAL_RULES}
 """
@@ -197,6 +209,12 @@ Rules for the WORKING-STORAGE block:
   • Do NOT duplicate items already in the provided context.
   • Do NOT include the "WORKING-STORAGE SECTION." header — only 01-level items.
   • Use standard column layout (01 at col 8).
+  • PIC length must fit the VALUE — count the literal character by
+    character (including parentheses, hyphens, slashes, spaces, punctuation).
+    Quotes themselves are NOT counted; everything between them IS.
+    Verify before you write the PIC:  VALUE '(CC1164)' has 8 chars, so
+    PIC X(08) — not X(07).  See "COBOL Output Rules" #6 in the system
+    prompt for the full rule and more examples.
 
 ━━ WHAT NOT TO OUTPUT ━━
 Do NOT output any of the following:
@@ -342,6 +360,12 @@ Rules for the WORKING-STORAGE block:
   • Do NOT duplicate items already in the provided context.
   • Do NOT include the "WORKING-STORAGE SECTION." header — only 01-level items.
   • Use standard column layout (01 at col 8).
+  • PIC length must fit the VALUE — count the literal character by
+    character (including parentheses, hyphens, slashes, spaces, punctuation).
+    Quotes themselves are NOT counted; everything between them IS.
+    Verify before you write the PIC:  VALUE '(CC1164)' has 8 chars, so
+    PIC X(08) — not X(07).  See "COBOL Output Rules" #6 in the system
+    prompt for the full rule and more examples.
 
 ━━ WHAT NOT TO OUTPUT ━━
 Do NOT output any of the following:
