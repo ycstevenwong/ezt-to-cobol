@@ -116,12 +116,14 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
 
     Same-start chain (e.g. CARD-START / CARD-START-6 / CARD-START-9):
       10  CARD-START                    PIC 9(16).
-      10  CARD-START-6 REDEFINES CARD-START  PIC 9(6).
+      10  FILLER REDEFINES CARD-START.
+          15  CARD-START-6              PIC 9(6).
+          15  FILLER                    PIC X(10).
       …
 
     Depth-2 decomposition group (e.g. CRANGE-KEY / CRANGE-ORG / CRANGE-TYPE):
       10  CRANGE-KEY                    PIC 9(6).
-      10  CRANGE-KEY-FIELDS REDEFINES CRANGE-KEY.
+      10  FILLER REDEFINES CRANGE-KEY.
           15  CRANGE-ORG                PIC 9(3).
           15  CRANGE-TYPE               PIC 9(3).
     """
@@ -144,21 +146,16 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
         if same_start is not None:
             # Base field
             lines.append(_field_line(prefix, fname, _pic(f.type, f.length, f.decimals)))
-            # Each alternative: a named REDEFINES group containing the field + FILLER
+            # Each alternative: an unnamed (FILLER) REDEFINES group containing
+            # the field + trailing FILLER. The wrapper group is never referenced
+            # in PROCEDURE DIVISION logic — only the inner alternative is.
             child_indent = " " * (7 + (depth + 1) * 4)
             child_lvl = f"{(depth + 1) * 5:02d}"
             child_prefix = f"{child_indent}{child_lvl}  "
             for alt in same_start:
                 af = alt.field
                 alt_name = af.name[:30]
-                # Group name: {base}-FIELDS-{suffix}, where suffix is the part of
-                # the alternative name after the base name (e.g. "6" from CARD-START-6)
-                if af.name.upper().startswith(f.name.upper() + "-"):
-                    suffix = af.name[len(f.name) + 1:]
-                else:
-                    suffix = af.name
-                grp_name = (f.name + "-FIELDS-" + suffix)[:30]
-                lines.append(f"{prefix}{grp_name} REDEFINES {fname}.")
+                lines.append(f"{prefix}FILLER REDEFINES {fname}.")
                 lines.append(_field_line(child_prefix, alt_name,
                                          _pic(af.type, af.length, af.decimals)))
                 filler_bytes = f.physical_bytes - af.physical_bytes
@@ -173,10 +170,10 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
                 lines.append(f"{prefix}{fname} OCCURS {f.occurs} TIMES.")
                 lines.extend(_render_subtree(node.children, depth + 1, f.start, one_end))
             else:
-                # Field with sub-fields: emit as elementary + named REDEFINES group.
+                # Field with sub-fields: emit as elementary + FILLER REDEFINES group.
+                # The wrapper group is never referenced — only its children are.
                 lines.append(_field_line(prefix, fname, _pic(f.type, f.length, f.decimals)))
-                redef_name = (f.name + "-FIELDS")[:30]
-                lines.append(f"{prefix}{redef_name} REDEFINES {fname}.")
+                lines.append(f"{prefix}FILLER REDEFINES {fname}.")
                 lines.extend(_render_subtree(node.children, depth + 1, f.start, one_end))
         elif node.children:
             # Plain group (depth > 2, level 15+)
@@ -204,17 +201,18 @@ def _record_layout(file: EZTFile) -> List[str]:
     if len(roots) == 1 and roots[0].children and not roots[0].field.occurs:
         # Single enclosing field with sub-fields (no OCCURS) → single 01, two-05 structure:
         #   05 ROOT-FULL   PIC X(n).
-        #   05 FILE-FIELDS REDEFINES ROOT-FULL.
+        #   05 FILLER      REDEFINES ROOT-FULL.
         #      10 ...
+        # The redefining group is unnamed (FILLER) — only the sub-fields under it
+        # are referenced in PROCEDURE DIVISION logic.
         root = roots[0]
         root_name = root.field.name[:30]
         full_name = (root.field.name + "-FULL")[:30]
-        redef_name = (file.name + "-FIELDS")[:30]
         pic = _pic(root.field.type, root.field.length, root.field.decimals)
         lines = [
             f"{_A}01  {root_name}.",
             _field_line(f"{_B}05  ", full_name, pic),
-            f"{_B}05  {redef_name} REDEFINES {full_name}.",
+            f"{_B}05  FILLER REDEFINES {full_name}.",
         ]
         lines.extend(_render_subtree(root.children, 2, root.field.start, root.field.end))
         return lines
@@ -314,13 +312,14 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
             # Wrap in a group item so REDEFINES sits at level 05:
             #   01  PARENT.
             #       05  PARENT-FULL   PIC X(n).
-            #       05  PARENT-FIELDS REDEFINES PARENT-FULL.
+            #       05  FILLER        REDEFINES PARENT-FULL.
             #           10  sub-field ...
+            # The redefining group is unnamed (FILLER) — only the sub-fields
+            # under it are referenced in PROCEDURE DIVISION logic.
             full_name  = (d.name + "-FULL")[:30]
-            redef_name = (d.name + "-FIELDS")[:30]
             lines.append(f"{_A}01  {d.name}.")
             lines.append(_field_line(f"{_B}05  ", full_name, pic_str + val_clause))
-            lines.append(f"{_B}05  {redef_name} REDEFINES {full_name}.")
+            lines.append(f"{_B}05  FILLER REDEFINES {full_name}.")
             cur = 1
             for sf in sorted(d.subfields, key=lambda s: s.start):
                 gap = sf.start - cur
