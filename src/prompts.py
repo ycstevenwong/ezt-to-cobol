@@ -126,7 +126,16 @@ You are an Easytrieve (EZT) to COBOL conversion specialist for IBM mainframe env
   COBOL: CALL 'PROGRAM' USING field1 field2
 
 ## COBOL Output Rules
-1. Return ONLY the requested COBOL code — no markdown fences, no explanations.
+1. Return ONLY the requested COBOL code. The very first character of your
+   response must be the first character of the COBOL source. Do NOT emit any
+   of the following:
+     • reasoning, analysis, planning, or chain-of-thought
+     • preamble such as "Here is the conversion:" or "Sure, ..."
+     • explanations, summaries, or commentary after the code
+     • markdown fences (```), headings, or any non-COBOL text
+   Comments inside the COBOL source (lines with '*' in column 7) are allowed
+   when they describe the code itself, but never use them to explain your
+   reasoning process.
 2. Standard COBOL column layout: Area A at col 8, Area B at col 12.
 3. COBOL-85 compatible syntax.
 4. Prefix working-storage items with WS-.
@@ -139,14 +148,19 @@ JOB_PROMPT = """\
 Convert this Easytrieve JOB section to IBM Enterprise COBOL PROCEDURE DIVISION code.
 
 ━━ WHAT TO OUTPUT ━━
-Output ONLY the PROCEDURE DIVISION content, starting with:
-       PROCEDURE DIVISION.
-No explanations, no markdown fences.
+Output ONLY the PROCEDURE DIVISION content. The very first characters of
+your response must be "       PROCEDURE DIVISION." — nothing before it.
+Stop immediately after the last COBOL line; do not add a closing summary.
 
 ━━ WHAT NOT TO OUTPUT ━━
-Do NOT output WORKING-STORAGE SECTION or any data declarations (01-level items,
-REDEFINES, PIC clauses, VALUE clauses, etc.).
-The DATA DIVISION is already complete — executable statements only.
+Do NOT output any of the following:
+  • Reasoning, analysis, planning, or chain-of-thought
+  • Preamble such as "Here is the conversion:" or "I'll convert this..."
+  • Explanations, summaries, or commentary after the code
+  • Markdown fences (```), headings, or any non-COBOL text
+  • WORKING-STORAGE SECTION or any data declarations (01-level items,
+    REDEFINES, PIC clauses, VALUE clauses, etc.) — the DATA DIVISION is
+    already complete; emit executable statements only.
 
 ━━ REQUIRED PROGRAM STRUCTURE ━━
 The PROCEDURE DIVISION must always begin with a MAIN-PROCESS paragraph that
@@ -247,12 +261,18 @@ Convert this Easytrieve REPORT section to IBM Enterprise COBOL PROCEDURE DIVISIO
 
 ━━ WHAT TO OUTPUT ━━
 Output ONLY the PROCEDURE DIVISION paragraphs — headings, detail print,
-control-break logic, end-of-report.
-No explanations, no markdown fences.
+control-break logic, end-of-report. The first character of your response
+must be the first character of the first COBOL paragraph. Stop immediately
+after the last COBOL line; do not add a closing summary.
 
 ━━ WHAT NOT TO OUTPUT ━━
-Do NOT output WORKING-STORAGE SECTION or any data declarations (01-level items,
-REDEFINES, PIC clauses, VALUE clauses, etc.).
+Do NOT output any of the following:
+  • Reasoning, analysis, planning, or chain-of-thought
+  • Preamble such as "Here is the conversion:" or "I'll convert this..."
+  • Explanations, summaries, or commentary after the code
+  • Markdown fences (```), headings, or any non-COBOL text
+  • WORKING-STORAGE SECTION or any data declarations (01-level items,
+    REDEFINES, PIC clauses, VALUE clauses, etc.).
 The DATA DIVISION is already complete — Python has already generated:
   WS-PAGE-CTR, WS-LINE-CTR, WS-PAGE-LIMIT, WS-LINE-LIMIT, PRINT-REC
   WS-{{FIELD}}-TOT, WS-{{FIELD}}-TOT-D  (for each SUM field)
