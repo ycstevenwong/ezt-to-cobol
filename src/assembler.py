@@ -103,6 +103,30 @@ def _strip_division_header(cobol: str, header_pattern: str) -> str:
     return re.sub(header_pattern, "", cobol, flags=re.IGNORECASE | re.MULTILINE).strip('\n')
 
 
+_LEVEL_LINE_RE = re.compile(r"^\s*(\d{2})(\s+.*)?$")
+
+
+def _normalize_ws_indent(ws_text: str) -> str:
+    """Anchor every level-number line to its COBOL fixed-format column.
+
+    01-level items must start at col 8 (Area A); sub-levels (05, 10, ...)
+    must start at col 12 (Area B).  The LLM sometimes emits these at
+    column 1 — this rewrites each level-number line to the right column
+    while leaving comment lines and continuation lines untouched.
+    """
+    out = []
+    for line in ws_text.splitlines():
+        m = _LEVEL_LINE_RE.match(line)
+        if m:
+            level = m.group(1)
+            rest = m.group(2) or ""
+            indent = " " * 7 if level == "01" else " " * 11
+            out.append(f"{indent}{level}{rest}")
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 _DATA_ITEM_RE = re.compile(r"^\s*\d{2}\s+\w", re.MULTILINE)
 _DATA_SECTION_RE = re.compile(
     r"^\s*(?:WORKING-STORAGE|FILE|LINKAGE|LOCAL-STORAGE)\s+SECTION\b",
@@ -172,9 +196,10 @@ def assemble(
     if combined:
         llm_ws, proc = split_ws_proc(combined)
         if llm_ws:
-            ws_parts.append(_strip_division_header(
+            cleaned_ws = _strip_division_header(
                 llm_ws, r"^\s*WORKING-STORAGE SECTION\.\s*$"
-            ))
+            )
+            ws_parts.append(_normalize_ws_indent(cleaned_ws))
         proc_m = re.search(
             r"^\s*PROCEDURE DIVISION[\w\s]*\.\s*$", proc,
             re.IGNORECASE | re.MULTILINE,

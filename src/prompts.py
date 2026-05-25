@@ -469,7 +469,18 @@ Common cases that need a declaration:
 Rules for the WORKING-STORAGE block:
   • Do NOT duplicate items already in the provided context.
   • Do NOT include the "WORKING-STORAGE SECTION." header — only 01-level items.
-  • Use standard column layout (01 at col 8).
+  • COLUMN LAYOUT IS MANDATORY:
+      - 01-level items MUST begin at column 8 (precede them with EXACTLY
+        7 spaces).  Never start a 01 at column 1.
+      - Sub-levels (05, 10, 15, …) MUST begin at column 12 (precede them
+        with EXACTLY 11 spaces).  Never start a sub-level at column 1.
+    Example (count the spaces before each level number):
+
+           01  WS-EOF                      PIC X VALUE 'N'.
+           01  WS-RPT-DTL.
+               05  WS-DTL-CUSTNO           PIC 9(5).
+               05  WS-DTL-CUSTNAME         PIC X(30).
+
   • PIC length must fit the VALUE — count the literal character by
     character (including parentheses, hyphens, slashes, spaces, punctuation).
     See "COBOL Output Rules" #6 in the system prompt for the full rule.
@@ -484,6 +495,8 @@ Do NOT output any of the following:
   • FILE SECTION, WORKING-STORAGE SECTION, or LINKAGE SECTION headers
   • Any item already defined in the provided DATA DIVISION context
   • Any paragraph emitted more than once across the JOB and REPORT sections
+  • 01-level or sub-level data items starting in column 1 (Area A
+    column 8 is required for 01, Area B column 12 for sub-levels)
 
 ━━ REQUIRED PROGRAM STRUCTURE ━━
 The PROCEDURE DIVISION must always begin with a MAIN-PROCESS paragraph
