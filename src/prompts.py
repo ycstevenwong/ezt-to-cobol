@@ -462,8 +462,14 @@ The DATA DIVISION context above already provides:
         WS-{{RPTNAME}}-HDG[-NN]    — one per HEADING [NN] 'text', or a
                                      single auto-generated column-header
                                      row when only PRINT is used.
-        WS-{{RPTNAME}}-LINE-NN     — one per LINE NN 'text' directive
-                                     (extra centered text lines).
+        WS-{{RPTNAME}}-LINE-NN     — one per LINE NN ... directive.
+                                     Centered text when 'text' is given;
+                                     positioned subfields for the form
+                                     LINE NN COL c FIELD COL c FIELD ...
+                                     Field-reference subfields are named
+                                     WS-{{RPT}}-L{{NN}}-{{FIELD-STEM}}
+                                     (similar T{{NN}} for TITLE,
+                                     H{{NN}} for HDG, F{{NN}} for FOOT).
         WS-{{RPTNAME}}-DTL         — from PRINT field list (one
                                      WS-DTL-<FLD> subfield per printed
                                      field, already sized to that field's

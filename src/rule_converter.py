@@ -379,9 +379,16 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
 
 @dataclass
 class _ColFragment:
-    """One COL-positioned text fragment on a TITLE/HEADING/LINE/FOOTING line."""
-    col:  int   # 1-based column position
-    text: str
+    """One COL-positioned piece on a TITLE/HEADING/LINE/FOOTING line.
+
+    Exactly one of `text` (a quoted literal) or `field` (an unquoted field
+    reference) is populated.  Field references are the EZT form
+        LINE 01 COL 01 WS-CUSTNO
+    where the printed value comes from a WS variable's content at runtime.
+    """
+    col:   int                       # 1-based column position
+    text:  Optional[str] = None      # literal text
+    field: Optional[str] = None      # field name (uppercased)
 
 
 @dataclass
@@ -465,7 +472,7 @@ def _parse_text_line(rest: str) -> _ReportLine:
         line_num = int(toks[0])
         toks = toks[1:]
 
-    # COL-positioned form: zero or more "COL n 'text'" triples.
+    # COL-positioned form: zero or more "COL n {literal | field}" triples.
     if toks and toks[0].upper() == "COL":
         frags: List[_ColFragment] = []
         i = 0
@@ -476,10 +483,12 @@ def _parse_text_line(rest: str) -> _ReportLine:
                 col = int(toks[i + 1])
             except ValueError:
                 break
-            text_tok = toks[i + 2]
-            if not (text_tok.startswith("'") or text_tok.startswith('"')):
-                break
-            frags.append(_ColFragment(col=col, text=_strip_quotes(text_tok)))
+            value_tok = toks[i + 2]
+            if value_tok.startswith("'") or value_tok.startswith('"'):
+                frags.append(_ColFragment(col=col, text=_strip_quotes(value_tok)))
+            else:
+                # Unquoted token — treat as a field reference (e.g. WS-CUSTNO).
+                frags.append(_ColFragment(col=col, field=value_tok.upper()))
             i += 3
         return _ReportLine(line_num=line_num, fragments=frags)
 
@@ -510,7 +519,9 @@ def _parse_report_directives(content: str) -> _ReportDirectives:
             d.print_fields = rest.split()
         elif kw == "CONTROL":
             toks = rest.split()
-            if toks:
+            if toks and toks[0].upper() != "FINAL":
+                # CONTROL FINAL is a special EZT marker meaning "end of report" —
+                # it does not name a real field, so don't generate a save area.
                 d.control_field = toks[0]
     return d
 
@@ -571,38 +582,66 @@ def _gen_text_line_block(layout_name: str, text: str, width: int) -> List[str]:
     return _layout_block(layout_name, items)
 
 
-def _gen_positioned_line_block(layout_name: str,
-                               fragments: List[_ColFragment],
-                               width: int) -> List[str]:
-    """Emit a layout with text fragments anchored to specific columns.
+def _strip_ws_prefix(name: str) -> str:
+    """Drop a leading 'WS-' so subfield names don't duplicate the prefix."""
+    upper = name.upper()
+    return name[3:] if upper.startswith("WS-") else name
 
-    Used for  TITLE NN COL c 'text' COL c 'text'  and the like.  Each
-    fragment becomes a FILLER subfield with its literal VALUE, separated
-    from neighbours by a FILLER gap sized to land on the requested column.
-    Overlapping fragments are clipped to the column of the next one.
+
+def _gen_positioned_line_block(
+    layout_name: str,
+    sub_prefix:  str,
+    fragments:   List[_ColFragment],
+    width:       int,
+    lookup:      Optional[Dict[str, Union[EZTField, EZTDefine]]] = None,
+) -> List[str]:
+    """Emit a layout with literal text and/or field references at specific COLs.
+
+    sub_prefix is the COBOL name prefix used for field-reference subfields
+    (e.g. "WS-RPT1-L01"); literal pieces are emitted as FILLER.  Fragments
+    are placed in increasing-COL order; one fragment's natural width is
+    clamped if the next fragment's COL would otherwise overlap.
     """
     if not fragments:
         return []
+    sorted_frags = sorted(fragments, key=lambda f: f.col)
+    # Each fragment can grow up to (next fragment's COL - 1) before clipping.
+    max_widths: List[int] = []
+    for i, frag in enumerate(sorted_frags):
+        if i + 1 < len(sorted_frags):
+            max_widths.append(max(0, sorted_frags[i + 1].col - frag.col))
+        else:
+            max_widths.append(max(0, width - frag.col + 1))
+
     items: List[Tuple[str, str, str]] = []
     cur_col = 1
-    for frag in sorted(fragments, key=lambda f: f.col):
+    for frag, max_w in zip(sorted_frags, max_widths):
         if frag.col > cur_col:
             gap = frag.col - cur_col
             items.append(("FILLER", f"PIC X({gap})", "VALUE SPACES"))
             cur_col += gap
         elif frag.col < cur_col:
-            # Overlap with previous fragment — skip this one.
+            # Overlap with previous fragment — skip.
             continue
-        text = frag.text
-        text_len = len(text)
-        if cur_col - 1 + text_len > width:
-            text_len = width - (cur_col - 1)
+
+        if frag.text is not None:
+            text = frag.text
+            text_len = min(len(text), max_w, max(0, width - (cur_col - 1)))
+            if text_len <= 0:
+                break
             text = text[:text_len]
-        if text_len <= 0:
-            break
-        escaped = text.replace("'", "''")
-        items.append(("FILLER", f"PIC X({text_len})", f"VALUE '{escaped}'"))
-        cur_col += text_len
+            escaped = text.replace("'", "''")
+            items.append(("FILLER", f"PIC X({text_len})", f"VALUE '{escaped}'"))
+            cur_col += text_len
+        else:  # field reference
+            fld = lookup.get(frag.field) if (lookup and frag.field) else None
+            natural = _display_width(fld.type, fld.length, fld.decimals) if fld else 10
+            col_w = min(natural, max_w, max(0, width - (cur_col - 1)))
+            if col_w <= 0:
+                break
+            sub_name = f"{sub_prefix}-{_strip_ws_prefix(frag.field)}"[:30]
+            items.append((sub_name, f"PIC X({col_w})", ""))
+            cur_col += col_w
 
     trailing = width - (cur_col - 1)
     if trailing > 0:
@@ -610,10 +649,31 @@ def _gen_positioned_line_block(layout_name: str,
     return _layout_block(layout_name, items)
 
 
-def _gen_line_block(layout_name: str, line: _ReportLine, width: int) -> List[str]:
-    """Dispatch to the centered or positioned emitter based on the line shape."""
+def _short_suffix(kind: str, line_num: Optional[int]) -> str:
+    """Compact suffix used to namespace sub-field names within a layout.
+
+    e.g. (TITLE, 1)  → 'T01';  (LINE, None) → 'L';  (HDG, 2) → 'H02'.
+    """
+    kind_initial = {"TITLE": "T", "HDG": "H", "LINE": "L", "FOOT": "F"}.get(kind, kind[:1])
+    if line_num is None:
+        return kind_initial
+    return f"{kind_initial}{line_num:02d}"
+
+
+def _gen_line_block(
+    rpt:         str,
+    kind:        str,
+    line:        _ReportLine,
+    width:       int,
+    lookup:      Optional[Dict[str, Union[EZTField, EZTDefine]]] = None,
+) -> List[str]:
+    """Dispatch to the centered or positioned emitter based on line shape."""
+    layout_name = _numbered_name(f"WS-{rpt}-{kind}", line.line_num)
     if line.fragments:
-        return _gen_positioned_line_block(layout_name, line.fragments, width)
+        sub_prefix = f"WS-{rpt}-{_short_suffix(kind, line.line_num)}"
+        return _gen_positioned_line_block(
+            layout_name, sub_prefix, line.fragments, width, lookup
+        )
     return _gen_text_line_block(layout_name, line.text, width)
 
 
@@ -726,20 +786,11 @@ def gen_report_ws(report_name: str, content: str,
         directives = _parse_report_directives(content)
         lookup = _build_field_lookup(preamble)
         for tl in directives.titles:
-            lines.extend(_gen_line_block(
-                _numbered_name(f"WS-{rpt}-TITLE", tl.line_num),
-                tl, print_width
-            ))
+            lines.extend(_gen_line_block(rpt, "TITLE", tl, print_width, lookup))
         for hl in directives.headings:
-            lines.extend(_gen_line_block(
-                _numbered_name(f"WS-{rpt}-HDG", hl.line_num),
-                hl, print_width
-            ))
+            lines.extend(_gen_line_block(rpt, "HDG", hl, print_width, lookup))
         for ln in directives.lines:
-            lines.extend(_gen_line_block(
-                _numbered_name(f"WS-{rpt}-LINE", ln.line_num),
-                ln, print_width
-            ))
+            lines.extend(_gen_line_block(rpt, "LINE", ln, print_width, lookup))
         if directives.print_fields:
             # Column-heading row auto-derived from PRINT field names.  Only
             # emitted when no explicit HEADING text was supplied — the
@@ -752,10 +803,7 @@ def gen_report_ws(report_name: str, content: str,
                 rpt, directives.print_fields, lookup, print_width
             ))
         for fl in directives.footings:
-            lines.extend(_gen_line_block(
-                _numbered_name(f"WS-{rpt}-FOOT", fl.line_num),
-                fl, print_width
-            ))
+            lines.extend(_gen_line_block(rpt, "FOOT", fl, print_width, lookup))
         if directives.control_field:
             ctl = lookup.get(directives.control_field.upper())
             ctl_w = _display_width(ctl.type, ctl.length, ctl.decimals) if ctl else 10
