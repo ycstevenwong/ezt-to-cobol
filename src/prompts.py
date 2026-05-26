@@ -623,10 +623,29 @@ Column layout (fixed format):
   • Nothing in columns 73+ (identification area — leave blank)
 
 Period (full stop) rules — the most critical COBOL rule:
-  • ONE period ends each paragraph: place it only on the LAST statement
-  • NEVER put a period inside IF / EVALUATE / PERFORM / READ / WRITE blocks
+  • ONE period ends each paragraph: place it only on the LAST statement.
+  • That trailing period is MANDATORY before the next paragraph header.
+    Without it the compiler glues the next paragraph header onto the
+    previous statement and the program fails to compile.
+
+       WRONG (missing '.' before MAIN-PROCESS-EXIT):
+           MAIN-PROCESS.
+               PERFORM OPEN-FILES THRU OPEN-FILES-EXIT
+               STOP RUN
+           MAIN-PROCESS-EXIT.
+               EXIT.
+
+       RIGHT:
+           MAIN-PROCESS.
+               PERFORM OPEN-FILES THRU OPEN-FILES-EXIT
+               STOP RUN.
+           MAIN-PROCESS-EXIT.
+               EXIT.
+
+  • NEVER put a period inside IF / EVALUATE / PERFORM / READ / WRITE blocks.
   • Structured delimiters END-IF, END-EVALUATE, END-PERFORM, END-READ, END-WRITE
-    terminate those blocks — the period comes only after the outermost END-xxx
+    terminate those blocks — the period comes only after the outermost END-xxx,
+    and that period is still required before the next paragraph header.
 
 Structured statements — always use scope terminators:
   • IF ... ELSE ... END-IF

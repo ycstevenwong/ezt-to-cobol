@@ -142,6 +142,43 @@ def _fix_integer_class_test(cobol: str) -> str:
     )
 
 
+def _ensure_period_before_paragraphs(cobol: str) -> str:
+    """Insert a missing period at the end of the statement that precedes
+    each Area-A paragraph header.
+
+    COBOL requires every paragraph's last statement to be terminated by a
+    period.  The LLM often forgets this, e.g.:
+           MAIN-PROCESS.
+               PERFORM OPEN-FILES THRU OPEN-FILES-EXIT
+               STOP RUN              <-- missing '.'
+           MAIN-PROCESS-EXIT.
+
+    The compiler then chains  STOP RUN MAIN-PROCESS-EXIT.  into one
+    invalid statement.  This walks the source: whenever a line matches
+    a paragraph definition, look backward past blank and comment lines
+    to find the last code line and ensure it ends with a period.
+    """
+    lines = cobol.splitlines()
+    for i, line in enumerate(lines):
+        if not _PARA_DEF_RE.match(line):
+            continue
+        # Look back for the last non-blank, non-comment line.
+        j = i - 1
+        while j >= 0:
+            prev_stripped = lines[j].rstrip()
+            if not prev_stripped:
+                j -= 1
+                continue
+            # Comment lines have '*' at col 7 (1-indexed) → index 6.
+            if len(lines[j]) > 6 and lines[j][6] == "*":
+                j -= 1
+                continue
+            if not prev_stripped.endswith("."):
+                lines[j] = prev_stripped + "."
+            break
+    return "\n".join(lines)
+
+
 def _rename_reserved_paragraphs(cobol: str) -> str:
     """Rewrite any paragraph definition whose name is a COBOL reserved word.
 
@@ -292,6 +329,9 @@ def assemble(
         clean_proc = _rename_reserved_paragraphs(clean_proc)
         # COBOL has no IS INTEGER class test — rewrite to IS NUMERIC.
         clean_proc = _fix_integer_class_test(clean_proc)
+        # Ensure each paragraph's last statement ends with a period so the
+        # next paragraph header doesn't get parsed as part of it.
+        clean_proc = _ensure_period_before_paragraphs(clean_proc)
         if clean_proc:
             procedure_parts.append(clean_proc)
 
