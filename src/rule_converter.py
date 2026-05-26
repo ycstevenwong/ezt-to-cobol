@@ -242,10 +242,24 @@ def _record_layout(file: EZTFile) -> List[str]:
     if len(roots) == 1 and not roots[0].children:
         root = roots[0]
         pic = _pic(root.field.type, root.field.length, root.field.decimals) + _occurs(root.field.occurs)
+        # If the record is wider than this lone field (e.g. a synthetic VSAM
+        # key occupying the first few bytes of a no-fields file), wrap in a
+        # group with trailing FILLER so the FD record matches RECORD CONTAINS.
+        rec_len = _effective_rec_length(file)
+        if rec_len > root.field.end:
+            rec_name = _safe_name(file.name + "-REC")
+            trailing = rec_len - root.field.end
+            out = [f"{_A}01  {rec_name}."]
+            if root.field.heading:
+                out.append(f"      * HEADING: {root.field.heading}")
+            out.append(_field_line(f"{_B}05  ", _safe_name(root.field.name), pic))
+            out.append(_field_line(f"{_B}05  ", "FILLER", f"PIC X({trailing})"))
+            return out
+        # Otherwise the lone field is the whole record.
         lines = []
         if root.field.heading:
             lines.append(f"      * HEADING: {root.field.heading}")
-        lines.append(_field_line(f"{_A}01  ", root.field.name[:30], pic))
+        lines.append(_field_line(f"{_A}01  ", _safe_name(root.field.name), pic))
         return lines
 
     # Multiple roots → sequential layout under a group record.
@@ -1020,10 +1034,18 @@ def _inject_vsam_key(file: EZTFile) -> EZTFile:
         )
         for f in file.fields
     ]
+    # When original fields exist they shift down by the key length, so the
+    # total record grows by the same amount.  When no fields were declared,
+    # the key fits *within* the existing record (the leftover bytes become
+    # FILLER in the layout) — bumping rec_length would be wrong.
+    if file.fields and file.rec_length:
+        new_rec_length = file.rec_length + _VSAM_KEY_LEN
+    else:
+        new_rec_length = file.rec_length
     return EZTFile(
         name=file.name,
         org=file.org,
-        rec_length=file.rec_length + _VSAM_KEY_LEN if file.rec_length else 0,
+        rec_length=new_rec_length,
         fields=[key_field] + shifted,
     )
 

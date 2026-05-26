@@ -14,12 +14,25 @@ required by that code).
 
 ## EZT -> COBOL mapping
 
-Range condition (CRITICAL — expand THRU manually; COBOL has no IF-range form):
+Range condition (CRITICAL — expand THRU as a RANGE, never as an enumeration):
+
+  THRU means a numeric range — the COBOL expansion has EXACTLY TWO
+  comparisons per range (one for each endpoint), regardless of how wide
+  the range is.  NEVER enumerate every value in the range.
+
+  ANTI-PATTERN — this is WRONG and forbidden, no matter how short or
+  long the range:
+
+      EZT:    IF TEST-KEY NE 1 THRU 100
+      WRONG:  IF TEST-KEY NOT = 1 AND TEST-KEY NOT = 2 AND ... NOT = 100
+              (do not unroll the range; the line would be enormous and
+               misses the semantic anyway)
+      RIGHT:  IF TEST-KEY < 1 OR TEST-KEY > 100
 
   Single range, positive:
     EZT:    IF F 1 THRU 100
-            IF F EQ 1 THRU 100         (EQ is the same as omitting it)
-    COBOL:  IF F >= 1 AND F <= 100        (NOT 'IF F >= 1 AND <= 100')
+            IF F EQ 1 THRU 100             (EQ is the same as omitting it)
+    COBOL:  IF F >= 1 AND F <= 100         (NOT 'IF F >= 1 AND <= 100')
 
   Single range, negated (either NOT or NE):
     EZT:    IF F NOT 1 THRU 100
@@ -27,19 +40,23 @@ Range condition (CRITICAL — expand THRU manually; COBOL has no IF-range form):
     COBOL:  IF F <  1 OR  F >  100
 
   Multiple ranges (chained with implicit OR; '+' is just a continuation
-  marker that has already been folded by the parser):
-    EZT:    IF F 1 THRU 100 200 THRU 300       (or EQ 1 THRU ...)
+  marker that the parser has already folded):
+    EZT:    IF F 1 THRU 100 200 THRU 300         (or EQ 1 THRU ...)
     COBOL:  IF (F >= 1 AND F <= 100) OR (F >= 200 AND F <= 300)
 
     EZT:    IF F NE 1 THRU 100 200 THRU 300
     COBOL:  IF (F < 1 OR F > 100) AND (F < 200 OR F > 300)
             (De Morgan: 'F not in any range' = 'F outside EVERY range')
 
-  Always repeat the field name on BOTH sides of every AND/OR; wrap each
-  range in parentheses when there is more than one.  The word THRU
-  remains valid in COBOL only for PERFORM ranges (PERFORM A THRU B);
-  it is INVALID inside an IF condition — never carry an EZT-style
-  'IF FIELD low THRU high' through to the COBOL output.
+  Rules of thumb:
+    • Each range = 2 comparisons; chained ranges = parenthesised groups.
+    • Always repeat the field name on every side of AND/OR.
+    • Use the symbolic forms (>=, <=, <, >) or the word forms
+      (GREATER OR EQUAL TO, LESS OR EQUAL TO, etc.) — both are valid
+      COBOL; symbols are shorter.
+    • THRU remains valid in COBOL ONLY for PERFORM ranges
+      (PERFORM A THRU B).  It is INVALID inside an IF — never carry
+      'IF FIELD low THRU high' through to the COBOL output.
 
 Other mappings:
   IF F = 'A' 'B' 'C'     -> IF F = 'A' OR F = 'B' OR F = 'C'
