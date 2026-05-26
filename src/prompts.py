@@ -15,6 +15,8 @@ required by that code).
 ## EZT -> COBOL mapping
   IF F 1 THRU 100        -> IF F >= 1 AND F <= 100
   IF F NOT 1 THRU 100    -> IF F < 1  OR  F > 100
+    (repeat the field name on BOTH sides — 'IF F >= 1 AND <= 100' is
+     INVALID COBOL.  THRU stays valid only for PERFORM ranges.)
   IF F = 'A' 'B' 'C'     -> IF F = 'A' OR F = 'B' OR F = 'C'
   IF EOF                 -> use AT END inside READ ... END-READ
   IF FOUND / NOTFOUND    -> IF WS-<FILE>-STATUS = '00' / '23'
