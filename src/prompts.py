@@ -111,6 +111,10 @@ You are an Easytrieve (EZT) to COBOL conversion specialist for IBM mainframe env
   EZT:   IF FIELD ALPHANUMERIC
   COBOL: IF FIELD IS ALPHABETIC
 
+  IMPORTANT: COBOL's numeric class test is the word NUMERIC.  There is
+  NO  IS INTEGER  class test in COBOL — never emit  IF FIELD IS INTEGER.
+  Use  IF FIELD IS NUMERIC  for "field contains digits / a valid number".
+
 ### Space / zero literals
   EZT:   IF FIELD = ' '   or   IF FIELD = SPACES
   COBOL: IF FIELD = SPACES

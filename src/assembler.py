@@ -129,6 +129,19 @@ _RESERVED_PARA_WORDS = {
 _PARA_DEF_RE = re.compile(r"^ {0,10}([A-Z][A-Z0-9-]*)\.\s*$", re.MULTILINE)
 
 
+# IS INTEGER is not COBOL syntax — the equivalent class test is IS NUMERIC.
+# The LLM occasionally emits the wrong form despite the prompt; rewrite it.
+_IS_INTEGER_RE = re.compile(r"\bIS\s+(NOT\s+)?INTEGER\b", re.IGNORECASE)
+
+
+def _fix_integer_class_test(cobol: str) -> str:
+    """Rewrite  IS [NOT] INTEGER  →  IS [NOT] NUMERIC  in procedure code."""
+    return _IS_INTEGER_RE.sub(
+        lambda m: f"IS {m.group(1) or ''}NUMERIC",
+        cobol,
+    )
+
+
 def _rename_reserved_paragraphs(cobol: str) -> str:
     """Rewrite any paragraph definition whose name is a COBOL reserved word.
 
@@ -274,6 +287,8 @@ def assemble(
         # reserved word (INITIAL, TERMINATE, etc.) — both definitions
         # and PERFORM references are rewritten in lockstep.
         clean_proc = _rename_reserved_paragraphs(clean_proc)
+        # COBOL has no IS INTEGER class test — rewrite to IS NUMERIC.
+        clean_proc = _fix_integer_class_test(clean_proc)
         if clean_proc:
             procedure_parts.append(clean_proc)
 
@@ -313,18 +328,27 @@ def assemble(
 # ── Column-72 enforcement ────────────────────────────────────────────────────
 #
 # COBOL fixed format: columns 1-6 sequence, 7 indicator, 8-72 code, 73-80 id.
-# Any line longer than 72 chars must be continued:
-#   - current line ends at or before col 72
-#   - next line has '-' in col 7, content resumes in Area B (col 12)
+# Any line longer than 72 chars must be continued.  Two continuation flavors:
 #
-# Special handling when the break falls inside a quoted literal:
-#   - close the quote on line 1
-#   - continuation line has '-' in col 7 and re-opens with a fresh quote
-#     in Area B (e.g.  'A LONG STRING THAT WOULD'
-#                     -     'OVERFLOW THE LINE').
+#   • Statement continuation (between two complete tokens) — NO indicator;
+#     content resumes in Area B (col 12).  In COBOL fixed format the line
+#     break is treated as inter-token whitespace, so  OCCURS 12 \n TIMES
+#     parses as  OCCURS 12 TIMES.
+#
+#   • Literal continuation (when the break falls inside a quoted literal)
+#     — '-' in col 7 of the continuation; the line concatenates with NO
+#     intervening space.  We close the quote on line 1 and re-open it on
+#     the continuation, e.g.
+#         'A LONG STRING THAT WOULD'
+#        -    'OVERFLOW THE LINE'.
+#
+# Using '-' for ordinary token continuation produces invalid COBOL because
+# the compiler concatenates the last word of line 1 with the first word
+# of line 2 (e.g. OCCURS 12 + -TIMES → "12TIMES").
 
 _MAX_COL = 72
 _CONT_PREFIX = " " * 6 + "-" + " " * 4   # cols 1-6 blank, col 7 '-', cols 8-11 blank
+_CONT_AREA_B = " " * 11                   # cols 1-11 blank, content from col 12
 
 
 def _find_literal_ranges(line: str) -> List[Tuple[int, int]]:
@@ -379,9 +403,11 @@ def _wrap_line(line: str) -> List[str]:
             break
 
     if break_at > 11:
+        # Statement continuation between complete tokens — NO '-' indicator.
+        # The line break itself is treated as whitespace by the COBOL parser.
         first = line[:break_at]
         rest = line[break_at:].lstrip(" ")
-        return [first] + _wrap_line(_CONT_PREFIX + rest)
+        return [first] + _wrap_line(_CONT_AREA_B + rest)
 
     # No safe break outside a literal — the literal itself must be split.
     # Close the quote on line 1, '-' continuation, fresh quote on line 2.
