@@ -405,7 +405,7 @@ Paragraph exit convention — every paragraph must have a matching exit paragrap
        {{RPTNAME}}-DETAIL.
            MOVE CUSTNO   TO WS-DTL-CUSTNO
            MOVE CUSTNAME TO WS-DTL-CUSTNAME
-           WRITE PRINT-REC FROM WS-{{RPTNAME}}-DTL
+           WRITE {{OUTFILE}}-REC FROM WS-{{RPTNAME}}-DTL
                AFTER ADVANCING 1 LINE
            ADD 1 TO WS-LINE-CTR
            IF WS-LINE-CTR >= WS-LINE-LIMIT
