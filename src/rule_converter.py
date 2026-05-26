@@ -171,10 +171,11 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
                 lines.append(f"{prefix}{fname} OCCURS {f.occurs} TIMES.")
                 lines.extend(_render_subtree(node.children, depth + 1, f.start, one_end))
             else:
-                # Field with sub-fields: emit as elementary + FILLER REDEFINES group.
-                # The wrapper group is never referenced — only its children are.
-                lines.append(_field_line(prefix, fname, _pic(f.type, f.length, f.decimals)))
-                lines.append(f"{prefix}FILLER REDEFINES {fname}.")
+                # Field with sub-fields → emit as a plain group; the sub-fields
+                # nest directly under it.  No REDEFINES wrapper — procedure code
+                # references the leaf sub-fields, never the parent as an
+                # elementary item.
+                lines.append(f"{prefix}{fname}.")
                 lines.extend(_render_subtree(node.children, depth + 1, f.start, one_end))
         elif node.children:
             # Plain group (depth > 2, level 15+)
@@ -222,22 +223,18 @@ def _record_layout(file: EZTFile) -> List[str]:
         return [_field_line(f"{_A}01  ", rec_name, f"PIC X({rec_len})")]
 
     if len(roots) == 1 and roots[0].children and not roots[0].field.occurs:
-        # Single enclosing field with sub-fields (no OCCURS) → single 01, two-05 structure:
-        #   05 ROOT-FULL   PIC X(n).
-        #   05 FILLER      REDEFINES ROOT-FULL.
-        #      10 ...
-        # The redefining group is unnamed (FILLER) — only the sub-fields under it
-        # are referenced in PROCEDURE DIVISION logic.
+        # Single enclosing field with sub-fields (no OCCURS) → flat group:
+        #   01 ROOT.
+        #      05 SUB-1 ...
+        #      05 SUB-2 ...
+        # No -FULL elementary item, no REDEFINES wrapper — procedure code
+        # references the leaf sub-fields, never the parent as a whole.
         root = roots[0]
-        root_name = root.field.name[:30]
-        full_name = (root.field.name + "-FULL")[:30]
-        pic = _pic(root.field.type, root.field.length, root.field.decimals)
-        lines = [
-            f"{_A}01  {root_name}.",
-            _field_line(f"{_B}05  ", full_name, pic),
-            f"{_B}05  FILLER REDEFINES {full_name}.",
-        ]
-        lines.extend(_render_subtree(root.children, 2, root.field.start, root.field.end))
+        root_name = _safe_name(root.field.name)
+        lines = [f"{_A}01  {root_name}."]
+        # depth=1 → children are level 05 in Area B (the old REDEFINES
+        # wrapper sat at level 05 itself and pushed its children to 10).
+        lines.extend(_render_subtree(root.children, 1, root.field.start, root.field.end))
         return lines
 
     # Single leaf with no sub-fields → make the field the 01-level item directly.
