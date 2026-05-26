@@ -497,6 +497,32 @@ exists in WORKING-STORAGE and that you must MOVE into.  Do NOT invent
 your own subfield names.  COBOL identifiers cannot exceed 30 characters,
 so the generated targets are already sized for you.
 
+━━ TRANSLATE ONLY WHAT'S IN THE SOURCE ━━
+The procedure code must mirror the EZT logic as-given.  Do NOT invent
+behaviour that is not present in the EZT source:
+  • No extra validation, error handling, or defensive checks beyond what
+    EZT explicitly does.
+  • No extra paragraphs, computations, or branches that EZT didn't ask for.
+  • Do NOT re-declare a variable that is already in the allow-list below.
+  • If two of your paragraphs would need the same WS item, declare it
+    ONCE in your --- WORKING-STORAGE --- block; the assembler rejects
+    duplicate 01-level names.
+
+The only scaffolding you may add beyond the EZT statements is the
+required MAIN-PROCESS / OPEN-FILES / MAIN-LOGIC / CLOSE-FILES skeleton
+documented above (and any <RPT>-HEADINGS / <RPT>-DETAIL / <RPT>-END
+paragraphs required by the REPORT scaffolding rules).
+
+━━ UNSUPPORTED COBOL FUNCTIONS ━━
+Some environments don't support intrinsic functions.  In particular,
+NEVER emit  FUNCTION MOD(x, y)  — many compilers reject it.  Use a
+COMPUTE-based modulo instead:
+       COMPUTE WS-REM = WS-X - (FUNCTION INTEGER (WS-X / WS-Y)) * WS-Y
+or, if FUNCTION INTEGER is also unavailable, materialise the quotient
+in an integer working-storage field and subtract:
+       DIVIDE WS-X BY WS-Y GIVING WS-Q
+       COMPUTE WS-REM = WS-X - (WS-Q * WS-Y)
+
 ━━ IDENTIFIER ALLOW-LIST (CRITICAL) ━━
 The end of the context block contains an "AVAILABLE WORKING-STORAGE +
 FILE-SECTION IDENTIFIERS" list.  EVERY identifier you reference in the

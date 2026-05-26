@@ -142,6 +142,38 @@ def _fix_integer_class_test(cobol: str) -> str:
     )
 
 
+_WS_01_RE = re.compile(r"^\s*01\s+([A-Z][A-Z0-9-]*)", re.IGNORECASE)
+
+
+def _dedupe_ws_items(ws_text: str) -> str:
+    """Drop duplicate 01-level items in the WORKING-STORAGE block.
+
+    When two declarations share the same 01-level name the compiler rejects
+    the program.  Keep the FIRST occurrence (rule-generated identifiers
+    that the LLM was told to use) and discard subsequent duplicates along
+    with their subordinate 05/10/... lines.  FILLER 01 items are exempt —
+    they intentionally repeat.
+    """
+    out: List[str] = []
+    seen: set = set()
+    skip = False
+    for line in ws_text.splitlines():
+        m = _WS_01_RE.match(line)
+        if m:
+            name = m.group(1).upper()
+            if name == "FILLER":
+                skip = False
+            elif name in seen:
+                skip = True
+                continue
+            else:
+                seen.add(name)
+                skip = False
+        if not skip:
+            out.append(line)
+    return "\n".join(out)
+
+
 def _ensure_period_before_paragraphs(cobol: str) -> str:
     """Insert a missing period at the end of the statement that precedes
     each Area-A paragraph header.
@@ -355,7 +387,10 @@ def assemble(
         data_sections.append("\n".join(file_section_parts))
     data_sections.append(_WS_SEC)
     if ws_parts:
-        data_sections.append("\n".join(ws_parts))
+        # Dedupe across every WS chunk (Python-generated + LLM-supplied) so
+        # a name declared by rule_converter isn't redeclared by the LLM's
+        # WS block (COBOL rejects duplicate 01-level identifiers).
+        data_sections.append(_dedupe_ws_items("\n".join(ws_parts)))
     else:
         data_sections.append("       01 FILLER PIC X.")
     data_div = "\n".join(data_sections)
