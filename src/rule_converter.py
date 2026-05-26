@@ -193,10 +193,32 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
 
 # ── Record layout ───────────────────────────────────────────────────────────────
 
+_DEFAULT_PRINT_WIDTH = 133   # standard mainframe print-line width (132 + carriage-control)
+
+
+def _effective_rec_length(file: EZTFile) -> int:
+    """Pick a usable record length even when EZT omits it.
+
+    Priority: explicit rec_length > end of the last declared field > 133.
+    The 133 default covers the common case of a REPORT output file that
+    EZT leaves unsized: every report needs *some* buffer to WRITE FROM.
+    """
+    if file.rec_length:
+        return file.rec_length
+    if file.fields:
+        return max(f.end for f in file.fields)
+    return _DEFAULT_PRINT_WIDTH
+
+
 def _record_layout(file: EZTFile) -> List[str]:
     roots = _build_tree(file.fields)
     if not roots:
-        return [f"{_A}01  {file.name}-REC."]
+        # No declared fields — typical of an unfielded report output file.
+        # Emit a single elementary record buffer at the effective length so
+        # the FD is valid and the procedure code can WRITE / WRITE FROM it.
+        rec_len = _effective_rec_length(file)
+        rec_name = (file.name + "-REC")[:30]
+        return [_field_line(f"{_A}01  ", rec_name, f"PIC X({rec_len})")]
 
     if len(roots) == 1 and roots[0].children and not roots[0].field.occurs:
         # Single enclosing field with sub-fields (no OCCURS) → single 01, two-05 structure:
@@ -283,10 +305,7 @@ def gen_file_section(files: List[EZTFile]) -> str:
     blocks = []
     for f in files:
         fd = [f"{_A}FD  {f.name}"]
-        if f.rec_length:
-            fd.append(f"{_B}RECORD CONTAINS {f.rec_length} CHARACTERS.")
-        else:
-            fd.append(f"{_B}RECORD CONTAINS 0 CHARACTERS.")
+        fd.append(f"{_B}RECORD CONTAINS {_effective_rec_length(f)} CHARACTERS.")
         fd += _record_layout(f)
         blocks.append("\n".join(fd))
     return "\n".join(blocks)
