@@ -159,11 +159,21 @@ def assemble(
     """Build a complete COBOL program from converted section outputs.
 
     Pass the original EZT source via `source` so per-report WS layouts
-    (TITLE / HDG / DTL / FOOT) can be generated deterministically — Python
-    needs the field-PIC lookup from the preamble to size detail columns.
+    (TITLE / HDG / DTL / LINE / FOOT) can be generated deterministically —
+    gen_report_ws needs the field-PIC lookup from the preamble.  When
+    `source` is omitted, the preamble is reconstructed from the FILE_DEF
+    and FIELD_DEF sections (already present in `sections`), so direct
+    callers that skip the source parameter still get the layouts.
     """
-    # Parse the preamble once so gen_report_ws can resolve PRINT field PICs.
-    preamble = parse_preamble(source) if source else None
+    if source:
+        preamble = parse_preamble(source)
+    else:
+        # Stitch the preamble back together from the parsed sections.
+        combined = "\n".join(
+            s.content for s in sections
+            if s.type in (SectionType.FILE_DEF, SectionType.FIELD_DEF)
+        )
+        preamble = parse_preamble(combined) if combined.strip() else None
 
     file_control_parts: List[str] = []
     file_section_parts: List[str] = []
