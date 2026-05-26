@@ -1080,9 +1080,23 @@ def _inject_vsam_key(file: EZTFile) -> EZTFile:
 
     key_field = EZTField(name=key_name, start=1, length=_VSAM_KEY_LEN, type="A")
 
-    # Shift every original field by the key length and clamp/drop any
-    # piece that would overflow the target — e.g. a single field that
-    # filled the whole record gets its length reduced by the key length.
+    # If the earliest declared field already starts AFTER the key area,
+    # there is no overlap — keep the original positions verbatim and let
+    # _render_subtree pad the gap with FILLER.  Only when an original
+    # field would collide with the key do we shift and clamp.
+    earliest = min((f.start for f in file.fields), default=_VSAM_KEY_LEN + 1)
+    if earliest > _VSAM_KEY_LEN:
+        preserved: List[EZTField] = list(file.fields)
+        return EZTFile(
+            name=file.name,
+            org=file.org,
+            rec_length=target,
+            fields=[key_field] + preserved,
+        )
+
+    # Otherwise: shift each field by the key length and clamp/drop any
+    # piece that overflows the target — e.g. a single field that filled
+    # the whole record gets its length reduced by the key length.
     shifted: List[EZTField] = []
     for f in file.fields:
         new_start = f.start + _VSAM_KEY_LEN
