@@ -143,6 +143,34 @@ You are an Easytrieve (EZT) to COBOL conversion specialist for IBM mainframe env
   EZT:   CALL program USING field1 field2
   COBOL: CALL 'PROGRAM' USING field1 field2
 
+### SYSDATE / SYSTIME (current system date/time)
+  EZT:   DISPLAY 'AS OF' SYSDATE SYSTIME
+  COBOL: ACCEPT WS-SYSDATE FROM DATE YYYYMMDD
+         ACCEPT WS-SYSTIME FROM TIME
+         DISPLAY 'AS OF ' WS-SYSDATE ' ' WS-SYSTIME
+
+  These COBOL ACCEPT verbs read the running system clock.  When the EZT
+  program references SYSDATE or SYSTIME, declare the supporting WS items
+  in your --- WORKING-STORAGE --- block and ACCEPT into them once near
+  the start of MAIN-LOGIC (or in OPEN-FILES) before first use:
+       01  WS-SYSDATE   PIC 9(8).      (YYYYMMDD)
+       01  WS-SYSTIME   PIC 9(8).      (HHMMSSss)
+  Then reference WS-SYSDATE / WS-SYSTIME everywhere the EZT used
+  SYSDATE / SYSTIME — never emit SYSDATE or SYSTIME as raw identifiers
+  in COBOL; they're EZT-only special registers and the compiler will
+  reject them.
+
+  If the program needs MM/DD/YYYY style output, declare an edited
+  field and MOVE the components in:
+       01  WS-SYSDATE-DISP.
+           05  FILLER       PIC X(2)  VALUE SPACES.
+           05  WS-SD-MM     PIC 9(2).
+           05  FILLER       PIC X     VALUE '/'.
+           05  WS-SD-DD     PIC 9(2).
+           05  FILLER       PIC X     VALUE '/'.
+           05  WS-SD-YYYY   PIC 9(4).
+  …with the corresponding MOVE statements after the ACCEPT.
+
 ## COBOL Output Rules
 1. Return ONLY the requested COBOL code. The very first character of your
    response must be the first character of the COBOL source. Do NOT emit any
