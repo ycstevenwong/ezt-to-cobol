@@ -378,12 +378,20 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
 
 
 @dataclass
+class _ReportLine:
+    """One text line from a numbered TITLE/HEADING/LINE/FOOTING directive."""
+    line_num: Optional[int]   # 1-based on the report page; None when omitted
+    text:     str
+
+
+@dataclass
 class _ReportDirectives:
-    title:         Optional[str]      = None
-    headings:      List[str]          = field(default_factory=list)
-    print_fields:  List[str]          = field(default_factory=list)
-    footing:       Optional[str]      = None
-    control_field: Optional[str]      = None
+    titles:        List[_ReportLine] = field(default_factory=list)
+    headings:      List[_ReportLine] = field(default_factory=list)
+    lines:         List[_ReportLine] = field(default_factory=list)   # extra LINE n 'text'
+    footings:      List[_ReportLine] = field(default_factory=list)
+    print_fields:  List[str]         = field(default_factory=list)
+    control_field: Optional[str]     = None
 
 
 def _strip_quotes(s: str) -> str:
@@ -393,8 +401,22 @@ def _strip_quotes(s: str) -> str:
     return s
 
 
+def _parse_text_line(rest: str) -> _ReportLine:
+    """Parse a directive payload of either  NN 'text'  or  'text'  (no number).
+
+    EZT report directives that take a positional line number look like
+    `TITLE 01 'THIS IS THE CENTRE'` or `LINE 02 'text'`.  The number is
+    optional — when absent the line is treated as unnumbered (None).
+    """
+    tokens = rest.split(None, 1)
+    if tokens and tokens[0].isdigit():
+        return _ReportLine(line_num=int(tokens[0]),
+                           text=_strip_quotes(tokens[1]) if len(tokens) > 1 else "")
+    return _ReportLine(line_num=None, text=_strip_quotes(rest))
+
+
 def _parse_report_directives(content: str) -> _ReportDirectives:
-    """Extract TITLE / HEADING / PRINT / FOOTING / CONTROL from a REPORT body."""
+    """Extract TITLE / HEADING / LINE / PRINT / FOOTING / CONTROL from a REPORT body."""
     d = _ReportDirectives()
     for raw in content.splitlines():
         stripped = raw.strip()
@@ -404,18 +426,25 @@ def _parse_report_directives(content: str) -> _ReportDirectives:
         kw = parts[0].upper() if parts else ""
         rest = parts[1].strip() if len(parts) > 1 else ""
         if kw == "TITLE":
-            d.title = _strip_quotes(rest)
+            d.titles.append(_parse_text_line(rest))
         elif kw == "HEADING":
-            d.headings.append(_strip_quotes(rest))
+            d.headings.append(_parse_text_line(rest))
+        elif kw == "LINE":
+            d.lines.append(_parse_text_line(rest))
+        elif kw == "FOOTING":
+            d.footings.append(_parse_text_line(rest))
         elif kw == "PRINT":
             d.print_fields = rest.split()
-        elif kw == "FOOTING":
-            d.footing = _strip_quotes(rest)
         elif kw == "CONTROL":
             toks = rest.split()
             if toks:
                 d.control_field = toks[0]
     return d
+
+
+def _numbered_name(base: str, line_num: Optional[int]) -> str:
+    """Append a -NN suffix when a line number is supplied; bare name otherwise."""
+    return f"{base}-{line_num:02d}" if line_num is not None else base
 
 
 def _display_width(ftype: str, length: int, decimals: int) -> int:
@@ -577,16 +606,36 @@ def gen_report_ws(report_name: str, content: str,
     if preamble is not None:
         directives = _parse_report_directives(content)
         lookup = _build_field_lookup(preamble)
-        if directives.title:
+        for tl in directives.titles:
             lines.extend(_gen_text_line_block(
-                f"WS-{rpt}-TITLE", directives.title, print_width
+                _numbered_name(f"WS-{rpt}-TITLE", tl.line_num),
+                tl.text, print_width
+            ))
+        for hl in directives.headings:
+            lines.extend(_gen_text_line_block(
+                _numbered_name(f"WS-{rpt}-HDG", hl.line_num),
+                hl.text, print_width
+            ))
+        for ln in directives.lines:
+            lines.extend(_gen_text_line_block(
+                _numbered_name(f"WS-{rpt}-LINE", ln.line_num),
+                ln.text, print_width
             ))
         if directives.print_fields:
-            lines.extend(_gen_hdg_block(rpt, directives.print_fields, lookup, print_width))
-            lines.extend(_gen_dtl_block(rpt, directives.print_fields, lookup, print_width))
-        if directives.footing:
+            # Column-heading row auto-derived from PRINT field names.  Only
+            # emitted when no explicit HEADING text was supplied — the
+            # HEADING directives above are the user's own column row.
+            if not directives.headings:
+                lines.extend(_gen_hdg_block(
+                    rpt, directives.print_fields, lookup, print_width
+                ))
+            lines.extend(_gen_dtl_block(
+                rpt, directives.print_fields, lookup, print_width
+            ))
+        for fl in directives.footings:
             lines.extend(_gen_text_line_block(
-                f"WS-{rpt}-FOOT", directives.footing, print_width
+                _numbered_name(f"WS-{rpt}-FOOT", fl.line_num),
+                fl.text, print_width
             ))
         if directives.control_field:
             ctl = lookup.get(directives.control_field.upper())

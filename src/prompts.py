@@ -455,12 +455,21 @@ The DATA DIVISION context above already provides:
         WS-PAGE-CTR, WS-LINE-CTR, WS-PAGE-LIMIT, WS-LINE-LIMIT, PRINT-REC
         WS-{{FIELD}}-TOT, WS-{{FIELD}}-TOT-D    (for each SUM field)
         WS-{{RPTNAME}}-CNT, WS-{{RPTNAME}}-CNT-D  (if COUNT present)
-        WS-{{RPTNAME}}-TITLE  — from TITLE 'text'   (centered on LINESIZE)
-        WS-{{RPTNAME}}-HDG    — from PRINT field list (column headings)
-        WS-{{RPTNAME}}-DTL    — from PRINT field list (one  WS-DTL-<FLD>
-                                subfield per printed field, already sized)
-        WS-{{RPTNAME}}-FOOT   — from FOOTING 'text'
-        WS-<CTRL>-SAVE        — from CONTROL <field>
+        WS-{{RPTNAME}}-TITLE[-NN]  — one per TITLE [NN] 'text' directive;
+                                     -NN suffix when EZT supplied a line
+                                     number, bare WS-{{RPTNAME}}-TITLE when
+                                     it didn't.  Centered on LINESIZE.
+        WS-{{RPTNAME}}-HDG[-NN]    — one per HEADING [NN] 'text', or a
+                                     single auto-generated column-header
+                                     row when only PRINT is used.
+        WS-{{RPTNAME}}-LINE-NN     — one per LINE NN 'text' directive
+                                     (extra centered text lines).
+        WS-{{RPTNAME}}-DTL         — from PRINT field list (one
+                                     WS-DTL-<FLD> subfield per printed
+                                     field, already sized to that field's
+                                     width).
+        WS-{{RPTNAME}}-FOOT[-NN]   — one per FOOTING [NN] 'text'.
+        WS-<CTRL>-SAVE             — from CONTROL <field>
 
 Declare a new 01-level item in the WORKING-STORAGE block ONLY when the
 procedure code references a variable that is NOT in the provided context.
