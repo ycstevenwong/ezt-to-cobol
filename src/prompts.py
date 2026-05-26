@@ -489,13 +489,27 @@ FROM the layout.
 
 Above every print-line layout that contains field references the DATA
 DIVISION context has comment lines of the form:
-       * <LAYOUT-NAME> — MOVE source fields into these subfields:
-       *   <EZT-FIELD-NAME>  (PIC ...)  →  <GENERATED-SUBFIELD-NAME>
+       * <LAYOUT-NAME> MOVE-targets:
+       *   <EZT-FIELD-NAME> PIC ... -> <GENERATED-SUBFIELD-NAME>
 Use these mappings verbatim — the LEFT-hand name is the EZT source you
 read from, the RIGHT-hand name is the target subfield that already
 exists in WORKING-STORAGE and that you must MOVE into.  Do NOT invent
 your own subfield names.  COBOL identifiers cannot exceed 30 characters,
 so the generated targets are already sized for you.
+
+━━ IDENTIFIER ALLOW-LIST (CRITICAL) ━━
+The end of the context block contains an "AVAILABLE WORKING-STORAGE +
+FILE-SECTION IDENTIFIERS" list.  EVERY identifier you reference in the
+procedure code (operands of MOVE, ADD, COMPUTE, IF, READ, WRITE, etc.)
+MUST either:
+  (a) appear verbatim in that list, OR
+  (b) be a new 01-level item that YOU declare in the
+      --- WORKING-STORAGE --- block of your response.
+
+Never invent a variable name that is neither in the allow-list nor
+declared in your WS block — the compiler will reject it.  If an EZT
+field has a long name that gets truncated to ≤30 chars in the
+allow-list, use the truncated form (it is the actual generated name).
 
 Common cases that DO need a declaration:
   • WS-EOF flag for AT END inside a READ loop

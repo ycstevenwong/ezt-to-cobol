@@ -2,6 +2,7 @@
 import requests as _requests
 from typing import Dict, List
 
+import re
 from src.assembler import split_ws_proc
 from src.parser import EZTSection, SectionType
 from src.prompts import SYSTEM_PROMPT, LOGIC_PROMPT
@@ -28,6 +29,30 @@ def _section_key(section: EZTSection) -> str:
 class _SafeDict(dict):
     def __missing__(self, key: str) -> str:
         return f"{{{key}}}"
+
+
+_VAR_LINE_RE = re.compile(
+    r"^\s+(?:0[1-9]|[1-4][0-9])\s+([A-Z][A-Z0-9-]*)\b", re.IGNORECASE
+)
+
+
+def _extract_var_names(context: str) -> List[str]:
+    """Pull every named data-item from the DATA DIVISION context.
+
+    Matches lines of the form ``<level> <NAME>`` (any COBOL level 01-49)
+    and drops FILLER entries.  Used to give the LLM an explicit allow-list
+    so it doesn't invent variables that don't exist in WORKING-STORAGE.
+    """
+    seen: dict = {}
+    for line in context.splitlines():
+        m = _VAR_LINE_RE.match(line)
+        if not m:
+            continue
+        name = m.group(1).upper()
+        if name == "FILLER":
+            continue
+        seen[name] = True
+    return sorted(seen)
 
 
 def make_client(
@@ -76,8 +101,25 @@ def convert_logic(
         )
     combined_content = "\n\n".join(content_blocks)
 
+    # Build an explicit allow-list of every named data-item that already
+    # exists in the DATA DIVISION context.  The LLM is told it MUST pick
+    # variable references from this list (or declare new ones in its WS
+    # block) — without it, the LLM tends to invent identifiers that don't
+    # compile because they were never declared.
+    available_vars = _extract_var_names(context)
+    if available_vars:
+        var_listing = (
+            "AVAILABLE WORKING-STORAGE + FILE-SECTION IDENTIFIERS\n"
+            "(reference ONLY these; if you need something not listed, add\n"
+            " it to your --- WORKING-STORAGE --- block):\n"
+            + "\n".join(f"  - {n}" for n in available_vars)
+        )
+        full_context = f"{context}\n\n{var_listing}" if context else var_listing
+    else:
+        full_context = context or "(none yet — no rule-based sections)"
+
     user_message = LOGIC_PROMPT.format_map(_SafeDict(
-        context=context or "(none yet — no rule-based sections)",
+        context=full_context,
         content=combined_content,
     ))
 
