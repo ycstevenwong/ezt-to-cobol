@@ -1,8 +1,9 @@
 """Rule-based COBOL generator for FILE_DEF and FIELD_DEF sections."""
-from dataclasses import dataclass
-from typing import List, Optional
+import re
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-from src.structured_parser import EZTDefine, EZTField, EZTFile, parse_preamble
+from src.structured_parser import EZTDefine, EZTField, EZTFile, Preamble, parse_preamble
 
 # COBOL area indentation
 _A = " " * 7   # Area A (col 8)  — FD, 01-level
@@ -373,18 +374,176 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
 
 # ── Public API ──────────────────────────────────────────────────────────────────
 
-def gen_report_ws(report_name: str, content: str) -> str:
+# ── REPORT directive parsing + per-report layouts ─────────────────────────────
+
+
+@dataclass
+class _ReportDirectives:
+    title:         Optional[str]      = None
+    headings:      List[str]          = field(default_factory=list)
+    print_fields:  List[str]          = field(default_factory=list)
+    footing:       Optional[str]      = None
+    control_field: Optional[str]      = None
+
+
+def _strip_quotes(s: str) -> str:
+    s = s.strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        return s[1:-1]
+    return s
+
+
+def _parse_report_directives(content: str) -> _ReportDirectives:
+    """Extract TITLE / HEADING / PRINT / FOOTING / CONTROL from a REPORT body."""
+    d = _ReportDirectives()
+    for raw in content.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("*"):
+            continue
+        parts = stripped.split(None, 1)
+        kw = parts[0].upper() if parts else ""
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        if kw == "TITLE":
+            d.title = _strip_quotes(rest)
+        elif kw == "HEADING":
+            d.headings.append(_strip_quotes(rest))
+        elif kw == "PRINT":
+            d.print_fields = rest.split()
+        elif kw == "FOOTING":
+            d.footing = _strip_quotes(rest)
+        elif kw == "CONTROL":
+            toks = rest.split()
+            if toks:
+                d.control_field = toks[0]
+    return d
+
+
+def _display_width(ftype: str, length: int, decimals: int) -> int:
+    """Approximate the print-column width for a field of the given EZT type."""
+    t = ftype.upper()
+    if t == "P":
+        return max(length * 2 - 1, length)
+    return length
+
+
+def _build_field_lookup(preamble: Preamble) -> Dict[str, Union[EZTField, EZTDefine]]:
+    """Map field/define NAMES (uppercased) → their parsed EZT object."""
+    lookup: Dict[str, Union[EZTField, EZTDefine]] = {}
+    for f in preamble.files:
+        for fld in f.fields:
+            lookup[fld.name.upper()] = fld
+    for d in preamble.defines:
+        lookup[d.name.upper()] = d
+    return lookup
+
+
+def _layout_block(name: str, items: List[Tuple[str, str, str]]) -> List[str]:
+    """Emit ``01 <name>.`` followed by 05-level subfields.
+
+    items: list of (sub_name | "FILLER", pic_string, value_clause_or_"")
+    """
+    out = [f"{_A}01  {name[:30]}."]
+    for sub_name, pic, val in items:
+        suffix = f"{pic} {val}".strip()
+        out.append(_field_line(f"{_B}05  ", sub_name[:30], suffix))
+    return out
+
+
+def _gen_text_line_block(layout_name: str, text: str, width: int) -> List[str]:
+    """Emit a centered single-text layout (TITLE / FOOTING)."""
+    if not text:
+        return []
+    escaped = text.replace("'", "''")
+    text_len = len(text)
+    if text_len > width:
+        escaped = escaped[:width]
+        text_len = width
+    lpad = (width - text_len) // 2
+    rpad = width - text_len - lpad
+    items: List[Tuple[str, str, str]] = []
+    if lpad > 0:
+        items.append(("FILLER", f"PIC X({lpad})", "VALUE SPACES"))
+    items.append(("FILLER", f"PIC X({text_len})", f"VALUE '{escaped}'"))
+    if rpad > 0:
+        items.append(("FILLER", f"PIC X({rpad})", "VALUE SPACES"))
+    return _layout_block(layout_name, items)
+
+
+_LEFT_MARGIN = 1   # spaces before the first column on a detail/heading line
+_COL_GAP     = 2   # spaces between adjacent columns
+
+
+def _gen_dtl_block(rpt: str, fields: List[str],
+                   lookup: Dict[str, Union[EZTField, EZTDefine]],
+                   width: int) -> List[str]:
+    if not fields:
+        return []
+    items: List[Tuple[str, str, str]] = []
+    used = 0
+    if _LEFT_MARGIN:
+        items.append(("FILLER", f"PIC X({_LEFT_MARGIN})", "VALUE SPACES"))
+        used += _LEFT_MARGIN
+    for i, fname in enumerate(fields):
+        if i > 0:
+            items.append(("FILLER", f"PIC X({_COL_GAP})", "VALUE SPACES"))
+            used += _COL_GAP
+        fld = lookup.get(fname.upper())
+        if fld is not None:
+            col_w = _display_width(fld.type, fld.length, fld.decimals)
+        else:
+            col_w = 10
+        items.append((f"WS-DTL-{fname}", f"PIC X({col_w})", ""))
+        used += col_w
+    trailing = width - used
+    if trailing > 0:
+        items.append(("FILLER", f"PIC X({trailing})", "VALUE SPACES"))
+    return _layout_block(f"WS-{rpt}-DTL", items)
+
+
+def _gen_hdg_block(rpt: str, fields: List[str],
+                   lookup: Dict[str, Union[EZTField, EZTDefine]],
+                   width: int) -> List[str]:
+    """Column-heading layout — uses PRINT field names as the header text."""
+    if not fields:
+        return []
+    items: List[Tuple[str, str, str]] = []
+    used = 0
+    if _LEFT_MARGIN:
+        items.append(("FILLER", f"PIC X({_LEFT_MARGIN})", "VALUE SPACES"))
+        used += _LEFT_MARGIN
+    for i, fname in enumerate(fields):
+        if i > 0:
+            items.append(("FILLER", f"PIC X({_COL_GAP})", "VALUE SPACES"))
+            used += _COL_GAP
+        fld = lookup.get(fname.upper())
+        col_w = _display_width(fld.type, fld.length, fld.decimals) if fld else 10
+        header = fname[:col_w].ljust(col_w).replace("'", "''")
+        items.append(("FILLER", f"PIC X({col_w})", f"VALUE '{header}'"))
+        used += col_w
+    trailing = width - used
+    if trailing > 0:
+        items.append(("FILLER", f"PIC X({trailing})", "VALUE SPACES"))
+    return _layout_block(f"WS-{rpt}-HDG", items)
+
+
+# ── REPORT WORKING-STORAGE generator ───────────────────────────────────────────
+
+
+def gen_report_ws(report_name: str, content: str,
+                  preamble: Optional[Preamble] = None) -> str:
     """Generate deterministic WORKING-STORAGE for a REPORT section.
 
-    Covers items whose structure is fixed regardless of report content:
+    Always emits:
       - Page/line counters and limits (adjusted by LINESIZE/PAGESIZE directives)
       - PRINT-REC output buffer
       - SUM field accumulators (WS-{FIELD}-TOT / WS-{FIELD}-TOT-D)
       - COUNT accumulator (WS-{RPTNAME}-CNT / WS-{RPTNAME}-CNT-D)
 
-    Field-specific layout items (TITLE, HEADING, PRINT detail line, FOOTING,
-    CONTROL save area) are left to the LLM because they require column-position
-    and field-PIC knowledge.
+    When `preamble` is supplied (so field PICs can be looked up), also emits:
+      - WS-{RPTNAME}-TITLE   from TITLE 'text'
+      - WS-{RPTNAME}-HDG     from PRINT field names (column headings)
+      - WS-{RPTNAME}-DTL     from PRINT field list (one subfield per field)
+      - WS-{RPTNAME}-FOOT    from FOOTING 'text'
     """
     rpt = report_name.upper()
     line_limit  = 55
@@ -411,12 +570,39 @@ def gen_report_ws(report_name: str, content: str) -> str:
         _field_line(f"{_A}01  ", "PRINT-REC",     f"PIC X({print_width}) VALUE SPACES"),
     ]
 
+    # Per-report layout items — generated only when we can resolve the
+    # PRINT fields' PICs through the preamble lookup.  Skipping this when
+    # no preamble is given preserves the original behavior for callers
+    # that haven't been migrated yet.
+    if preamble is not None:
+        directives = _parse_report_directives(content)
+        lookup = _build_field_lookup(preamble)
+        if directives.title:
+            lines.extend(_gen_text_line_block(
+                f"WS-{rpt}-TITLE", directives.title, print_width
+            ))
+        if directives.print_fields:
+            lines.extend(_gen_hdg_block(rpt, directives.print_fields, lookup, print_width))
+            lines.extend(_gen_dtl_block(rpt, directives.print_fields, lookup, print_width))
+        if directives.footing:
+            lines.extend(_gen_text_line_block(
+                f"WS-{rpt}-FOOT", directives.footing, print_width
+            ))
+        if directives.control_field:
+            ctl = lookup.get(directives.control_field.upper())
+            ctl_w = _display_width(ctl.type, ctl.length, ctl.decimals) if ctl else 10
+            lines.append(_field_line(
+                f"{_A}01  ",
+                f"WS-{directives.control_field.upper()}-SAVE"[:30],
+                f"PIC X({ctl_w}) VALUE SPACES",
+            ))
+
     for raw in content.splitlines():
         tokens = raw.strip().split()
         if not tokens or tokens[0].upper() != "SUM":
             continue
-        for field in tokens[1:]:
-            fname = field.upper()
+        for fld_name in tokens[1:]:
+            fname = fld_name.upper()
             lines.append(_field_line(f"{_A}01  ", f"WS-{fname}-TOT"[:30],
                                      "PIC S9(12)V9(2) COMP-3 VALUE ZERO"))
             lines.append(_field_line(f"{_A}01  ", f"WS-{fname}-TOT-D"[:30],

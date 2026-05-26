@@ -4,6 +4,7 @@ from typing import Dict, List, Tuple
 
 from src.parser import EZTSection, SectionType
 from src.rule_converter import gen_report_ws
+from src.structured_parser import parse_preamble
 
 _IDENT_DIV = """\
        IDENTIFICATION DIVISION.
@@ -153,8 +154,16 @@ def assemble(
     sections: List[EZTSection],
     converted: Dict[str, str],
     program_name: str = "EZTPROG",
+    source: str = "",
 ) -> str:
-    """Build a complete COBOL program from converted section outputs."""
+    """Build a complete COBOL program from converted section outputs.
+
+    Pass the original EZT source via `source` so per-report WS layouts
+    (TITLE / HDG / DTL / FOOT) can be generated deterministically — Python
+    needs the field-PIC lookup from the preamble to size detail columns.
+    """
+    # Parse the preamble once so gen_report_ws can resolve PRINT field PICs.
+    preamble = parse_preamble(source) if source else None
 
     file_control_parts: List[str] = []
     file_section_parts: List[str] = []
@@ -181,10 +190,11 @@ def assemble(
             ws_parts.append(clean)
 
         elif section.type == SectionType.REPORT:
-            # Python generates fixed report WS (counters, accumulators)
-            # deterministically; this stays per-report.  The LLM-generated
-            # procedure code is in the COMBINED_LOGIC key, not here.
-            py_ws = gen_report_ws(section.name, section.content)
+            # Python generates the per-report WS deterministically: counters,
+            # accumulators, and (when a preamble is available) the
+            # WS-{RPT}-TITLE / -HDG / -DTL / -FOOT line layouts as well.
+            # The LLM-generated procedure code is in the COMBINED_LOGIC key.
+            py_ws = gen_report_ws(section.name, section.content, preamble=preamble)
             if py_ws:
                 ws_parts.append(py_ws)
         # JOB sections contribute nothing here — their procedure code

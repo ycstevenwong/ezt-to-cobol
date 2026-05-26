@@ -65,7 +65,7 @@ def _convert_one(
         click.echo("Request timed out. Try increasing --timeout or check the server.", err=True)
         return False
 
-    cobol = assemble(sections, converted, program_name=prog_name)
+    cobol = assemble(sections, converted, program_name=prog_name, source=source)
 
     if output:
         try:
