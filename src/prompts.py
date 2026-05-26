@@ -526,6 +526,15 @@ that orchestrates the entire program by PERFORMing lower-level paragraphs
 in order.  Every PERFORM must use the THRU form so the exit paragraph is
 included.  STOP RUN must appear only inside MAIN-PROCESS.
 
+Paragraph naming — IMPORTANT:
+  COBOL reserved words CANNOT be used as paragraph names.  Never emit a
+  paragraph called INITIAL, INITIALIZE, TERMINATE, START, END, DATA,
+  SECTION, OPEN, CLOSE, READ, WRITE, MOVE, IF, DISPLAY, COMPUTE, etc.
+  Use a descriptive suffix instead:
+       BAD:   INITIAL.   /   TERMINATE.
+       GOOD:  INIT-RTN.  /   TERM-RTN.  /  WRAP-UP.  /  CLEANUP-RTN.
+  When in doubt, append -RTN, -PARA, or -PROCESS to the verb.
+
 JOB paragraphs come first:
        MAIN-PROCESS.
            PERFORM OPEN-FILES   THRU OPEN-FILES-EXIT

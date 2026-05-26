@@ -107,6 +107,50 @@ def _strip_division_header(cobol: str, header_pattern: str) -> str:
 _LEVEL_LINE_RE = re.compile(r"^\s*(\d{2})(\s+.*)?$")
 
 
+# COBOL reserved words the LLM most commonly tries to use as bare paragraph
+# names.  Compile would fail on these — the post-processor below renames
+# every definition + reference to <NAME>-RTN.
+# NOTE: EXIT is intentionally NOT in this set — it's a valid statement and
+# every  <PARA>-EXIT  paragraph body contains a bare  EXIT.  line.
+_RESERVED_PARA_WORDS = {
+    "INITIAL", "INITIALIZE", "TERMINATE",
+    "START", "STOP", "END", "DATA", "SECTION", "DIVISION",
+    "OPEN", "CLOSE", "READ", "WRITE", "REWRITE", "DELETE",
+    "MOVE", "ADD", "SUBTRACT", "MULTIPLY", "DIVIDE", "COMPUTE",
+    "DISPLAY", "ACCEPT", "PERFORM", "GOBACK", "CALL",
+    "IF", "ELSE", "EVALUATE", "WHEN",
+    "SEARCH", "SORT", "MERGE", "STRING", "UNSTRING", "INSPECT",
+    "SET", "REPLACE", "COPY",
+}
+
+# Paragraph definitions live in Area A (col 8 → up to ~10 leading spaces).
+# Restricting to that range excludes Area-B lines like  '           EXIT.'
+# which are statements, not paragraph headers.
+_PARA_DEF_RE = re.compile(r"^ {0,10}([A-Z][A-Z0-9-]*)\.\s*$", re.MULTILINE)
+
+
+def _rename_reserved_paragraphs(cobol: str) -> str:
+    """Rewrite any paragraph definition whose name is a COBOL reserved word.
+
+    Scans for paragraph headers like  INITIAL.  /  INITIAL-EXIT.  whose base
+    (the part before any -EXIT suffix) matches a reserved word, then rewrites
+    every occurrence of that base — definitions and PERFORM references —
+    to base+'-RTN'.  Paragraphs that aren't reserved are left alone.
+    """
+    rename: set = set()
+    for m in _PARA_DEF_RE.finditer(cobol):
+        name = m.group(1).upper()
+        base = name[:-5] if name.endswith("-EXIT") else name
+        if base in _RESERVED_PARA_WORDS:
+            rename.add(base)
+    if not rename:
+        return cobol
+    # Apply renames longest-first so prefixes don't shadow longer ones.
+    for base in sorted(rename, key=len, reverse=True):
+        cobol = re.sub(rf"\b{re.escape(base)}\b", f"{base}-RTN", cobol)
+    return cobol
+
+
 def _normalize_ws_indent(ws_text: str) -> str:
     """Anchor every level-number line to its COBOL fixed-format column.
 
@@ -226,6 +270,10 @@ def assemble(
         )
         clean_proc = proc[proc_m.end():].strip("\n") if proc_m else proc.strip("\n")
         clean_proc = _strip_data_decls(clean_proc)
+        # Rename any paragraph whose bare name collides with a COBOL
+        # reserved word (INITIAL, TERMINATE, etc.) — both definitions
+        # and PERFORM references are rewritten in lockstep.
+        clean_proc = _rename_reserved_paragraphs(clean_proc)
         if clean_proc:
             procedure_parts.append(clean_proc)
 
