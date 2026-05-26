@@ -555,10 +555,11 @@ def _layout_block(name: str, items: List[Tuple[str, str, str]]) -> List[str]:
 
     items: list of (sub_name | "FILLER", pic_string, value_clause_or_"")
     """
-    out = [f"{_A}01  {name[:30]}."]
+    out = [f"{_A}01  {_safe_name(name)}."]
     for sub_name, pic, val in items:
         suffix = f"{pic} {val}".strip()
-        out.append(_field_line(f"{_B}05  ", sub_name[:30], suffix))
+        clean_sub = sub_name if sub_name == "FILLER" else _safe_name(sub_name)
+        out.append(_field_line(f"{_B}05  ", clean_sub, suffix))
     return out
 
 
@@ -591,25 +592,43 @@ def _strip_ws_prefix(name: str) -> str:
 _MAX_NAME = 30   # COBOL identifier length limit
 
 
+def _safe_name(name: str) -> str:
+    """Trim a generated identifier to 30 chars and strip any trailing '-'.
+
+    COBOL identifiers cannot end with a hyphen — that's a compile error —
+    which can happen when the 30-char truncation lands exactly on one.
+    """
+    name = name[:_MAX_NAME].rstrip("-")
+    return name or "FILLER"   # never return empty; FILLER is a safe fallback
+
+
 def _build_sub_name(sub_prefix: str, source_field: str) -> str:
     """Build a unique-ish subfield name from a source field reference.
 
     Format: ``<sub_prefix>-<source_stem>``, where source_stem is the field
     name without a leading 'WS-'.  If the combined name would exceed COBOL's
-    30-char identifier limit, the source stem is right-truncated.
+    30-char identifier limit the stem is right-truncated; trailing hyphens
+    that fall on the cut point are stripped.
     """
     stem = _strip_ws_prefix(source_field)
     full = f"{sub_prefix}-{stem}"
     if len(full) <= _MAX_NAME:
-        return full
+        return _safe_name(full)
     keep = _MAX_NAME - len(sub_prefix) - 1   # 1 for the connecting hyphen
     if keep <= 0:
-        return full[:_MAX_NAME]
-    return f"{sub_prefix}-{stem[:keep]}"
+        return _safe_name(full)
+    return _safe_name(f"{sub_prefix}-{stem[:keep]}")
 
 
 def _field_pic(field: Union[EZTField, EZTDefine]) -> str:
     return _pic(field.type, field.length, field.decimals)
+
+
+def _format_map_line(source: str, target: str,
+                     fld: Optional[Union[EZTField, EZTDefine]]) -> str:
+    """One source-to-target comment line, with single-space separators."""
+    pic_hint = f" {_field_pic(fld)}" if fld else ""
+    return f"      *   {source}{pic_hint} -> {target}"
 
 
 def _gen_field_map_comments(
@@ -621,18 +640,17 @@ def _gen_field_map_comments(
     """Emit comment lines mapping source EZT fields to generated subfields.
 
     These appear in the WORKING-STORAGE SECTION above the layout, giving
-    the LLM the EZT-name → generated-name correspondence so its MOVE
+    the LLM the EZT-name -> generated-name correspondence so its MOVE
     statements target the right destination.
     """
     field_refs = [f for f in fragments if f.field]
     if not field_refs:
         return []
-    out = [f"      * {layout_name} — MOVE source fields into these subfields:"]
+    out = [f"      * {layout_name} MOVE-targets:"]
     for frag in sorted(field_refs, key=lambda f: f.col):
         sub = _build_sub_name(sub_prefix, frag.field)
         fld = lookup.get(frag.field) if (lookup and frag.field) else None
-        pic_hint = f" ({_field_pic(fld)})" if fld else ""
-        out.append(f"      *   {frag.field}{pic_hint}  →  {sub}")
+        out.append(_format_map_line(frag.field, sub, fld))
     return out
 
 
@@ -644,12 +662,11 @@ def _gen_dtl_map_comments(
     """Emit comment lines for the auto-PRINT detail layout subfields."""
     if not fields:
         return []
-    out = [f"      * WS-{rpt}-DTL — MOVE source fields into these subfields:"]
+    out = [f"      * WS-{rpt}-DTL MOVE-targets:"]
     for fname in fields:
-        sub = f"WS-DTL-{fname}"[:_MAX_NAME]
+        sub = _safe_name(f"WS-DTL-{fname}")
         fld = lookup.get(fname.upper()) if lookup else None
-        pic_hint = f" ({_field_pic(fld)})" if fld else ""
-        out.append(f"      *   {fname}{pic_hint}  →  {sub}")
+        out.append(_format_map_line(fname, sub, fld))
     return out
 
 
@@ -768,7 +785,7 @@ def _gen_dtl_block(rpt: str, fields: List[str],
             col_w = _display_width(fld.type, fld.length, fld.decimals)
         else:
             col_w = 10
-        sub_name = f"WS-DTL-{fname}"[:_MAX_NAME]
+        sub_name = _safe_name(f"WS-DTL-{fname}")
         items.append((sub_name, f"PIC X({col_w})", ""))
         used += col_w
     trailing = width - used
