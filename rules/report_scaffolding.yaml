@@ -17,22 +17,28 @@ overview: |
     first, but the WRITE itself must target {OUTFILE}-REC.
 
 required_paragraphs: |
-  Generate these paragraphs for EVERY report (replace {RPTNAME} with the report name):
+  Generate ONLY the paragraphs the EZT directives actually require —
+  don't add empty scaffolding for directives the source doesn't use.
 
-    {RPTNAME}-HEADINGS
-      — Increment WS-PAGE-CTR, reset WS-LINE-CTR to zero.
-      — WRITE {OUTFILE}-REC FROM WS-{RPTNAME}-TITLE AFTER ADVANCING PAGE.
-      — Write any heading lines AFTER ADVANCING 1 LINE.
-
-    {RPTNAME}-DETAIL
+    {RPTNAME}-DETAIL                        (only when EZT has PRINT)
       — MOVE each PRINT field into the corresponding detail line subfield.
       — WRITE {OUTFILE}-REC FROM WS-{RPTNAME}-DTL AFTER ADVANCING 1 LINE.
-      — ADD 1 TO WS-LINE-CTR.
-      — IF WS-LINE-CTR >= WS-LINE-LIMIT PERFORM {RPTNAME}-HEADINGS END-IF.
+      — Add pagination (ADD 1 TO WS-LINE-CTR / IF WS-LINE-CTR >=
+        WS-LINE-LIMIT PERFORM {RPTNAME}-HEADINGS) ONLY when the EZT
+        source explicitly drives pagination.
 
-    {RPTNAME}-END
-      — Write any FOOTING line.
-      — Write final totals for SUM/COUNT fields.
+    {RPTNAME}-HEADINGS                      (only when EZT has TITLE or HEADING)
+      — WRITE {OUTFILE}-REC FROM WS-{RPTNAME}-TITLE AFTER ADVANCING PAGE.
+      — Write any heading lines AFTER ADVANCING 1 LINE.
+      — Increment WS-PAGE-CTR / reset WS-LINE-CTR ONLY when pagination
+        is in use (same condition as the WS-LINE-CTR check above).
+
+    {RPTNAME}-END                           (only when EZT has FOOTING,
+                                             SUM, or COUNT)
+      — Write the FOOTING line if EZT has FOOTING.
+      — Write final totals for each SUM and the COUNT, if EZT declared them.
+      — Skip this paragraph entirely if the EZT REPORT has none of FOOTING /
+        SUM / COUNT.
 
 directives:
   TITLE:
@@ -128,10 +134,10 @@ directives:
         MOVE {FLD1} TO WS-DTL-{FLD1}
         MOVE {FLD2} TO WS-DTL-{FLD2}
         WRITE {OUTFILE}-REC FROM WS-{RPTNAME}-DTL AFTER ADVANCING 1 LINE
-        ADD 1 TO WS-LINE-CTR
-        IF WS-LINE-CTR >= WS-LINE-LIMIT
-            PERFORM {RPTNAME}-HEADINGS
-        END-IF
+      [Pagination (ADD 1 TO WS-LINE-CTR / IF WS-LINE-CTR >= WS-LINE-LIMIT)
+       is OPTIONAL — add it only if the EZT source actually drives
+       pagination.  If EZT relies on the implicit page-break behavior
+       without referencing WS-LINE-CTR directly, omit this block.]
 
   FOOTING:
     description: "Text line printed at the very end of the report."
