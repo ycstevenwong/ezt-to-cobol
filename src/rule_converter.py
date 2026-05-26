@@ -328,23 +328,32 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
         else:
             val_clause = ""
         if d.subfields:
-            # 01-level REDEFINES is invalid in WORKING-STORAGE.
-            # Wrap in a group item so REDEFINES sits at level 05:
-            #   01  PARENT.
-            #       05  PARENT-FULL   PIC X(n).
-            #       05  FILLER        REDEFINES PARENT-FULL.
-            #           10  sub-field ...
-            # The redefining group is unnamed (FILLER) — only the sub-fields
-            # under it are referenced in PROCEDURE DIVISION logic.
-            full_name  = (d.name + "-FULL")[:30]
-            lines.append(f"{_A}01  {d.name}.")
-            lines.append(_field_line(f"{_B}05  ", full_name, pic_str + val_clause))
-            lines.append(f"{_B}05  FILLER REDEFINES {full_name}.")
+            # Flat group layout — subfields hang directly off the 01 group,
+            # no REDEFINES wrapper, no <NAME>-FULL elementary item.  IBM
+            # Enterprise COBOL accepts a non-numeric VALUE on an 01 group
+            # (initializes all subordinate items as one character string),
+            # so an EZT alphanumeric DEFINE with subfields stays one block.
+            #
+            # Numeric DEFINEs with both a VALUE and subfields are the one
+            # case that still needs the REDEFINES wrapper, because COBOL
+            # disallows a numeric VALUE on a group item.
+            is_numeric = d.type.upper() in ("N", "P", "B", "U")
+            needs_redefines = is_numeric and d.value is not None
+            if needs_redefines:
+                full_name = (d.name + "-FULL")[:30]
+                lines.append(f"{_A}01  {_safe_name(d.name)}.")
+                lines.append(_field_line(f"{_B}05  ", full_name, pic_str + val_clause))
+                lines.append(f"{_B}05  FILLER REDEFINES {full_name}.")
+                sub_prefix = f"{_C}10  "
+            else:
+                # Put the group VALUE (if any) on the 01 line itself.
+                lines.append(f"{_A}01  {_safe_name(d.name)}{val_clause}.")
+                sub_prefix = f"{_B}05  "
             cur = 1
             for sf in sorted(d.subfields, key=lambda s: s.start):
                 gap = sf.start - cur
                 if gap > 0:
-                    lines.append(_field_line(f"{_C}10  ", "FILLER", f"PIC X({gap})"))
+                    lines.append(_field_line(sub_prefix, "FILLER", f"PIC X({gap})"))
                 sf_pic = _pic(sf.type, sf.length, sf.decimals) + _occurs(sf.occurs)
                 if sf.value is not None:
                     if sf.type.upper() in ("N", "P", "B", "U") and sf.value in ("0", ""):
@@ -353,11 +362,11 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
                         sf_pic += f" VALUE {sf.value}"
                     else:
                         sf_pic += f" VALUE '{sf.value}'"
-                lines.append(_field_line(f"{_C}10  ", sf.name[:30], sf_pic))
+                lines.append(_field_line(sub_prefix, _safe_name(sf.name), sf_pic))
                 cur = sf.end + 1
             trailing = d.physical_bytes - cur + 1
             if trailing > 0:
-                lines.append(_field_line(f"{_C}10  ", "FILLER", f"PIC X({trailing})"))
+                lines.append(_field_line(sub_prefix, "FILLER", f"PIC X({trailing})"))
         else:
             full_line = f"{_A}01  {d.name:<33} {pic_str}{val_clause}{_occurs(d.occurs)}."
             if len(full_line) <= 72 or not val_clause:
