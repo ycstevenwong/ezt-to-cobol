@@ -16,13 +16,27 @@ required by that code).
 
 Range condition (CRITICAL — expand THRU manually; COBOL has no IF-range form):
 
-  EZT:    IF F 1 THRU 100
-  COBOL:  IF F >= 1 AND F <= 100          (NOT 'IF F >= 1 AND <= 100')
+  Single range, positive:
+    EZT:    IF F 1 THRU 100
+            IF F EQ 1 THRU 100         (EQ is the same as omitting it)
+    COBOL:  IF F >= 1 AND F <= 100        (NOT 'IF F >= 1 AND <= 100')
 
-  EZT:    IF F NOT 1 THRU 100
-  COBOL:  IF F <  1 OR  F >  100
+  Single range, negated (either NOT or NE):
+    EZT:    IF F NOT 1 THRU 100
+            IF F NE  1 THRU 100
+    COBOL:  IF F <  1 OR  F >  100
 
-  Always repeat the field name on BOTH sides of AND/OR.  The word THRU
+  Multiple ranges (chained with implicit OR; '+' is just a continuation
+  marker that has already been folded by the parser):
+    EZT:    IF F 1 THRU 100 200 THRU 300       (or EQ 1 THRU ...)
+    COBOL:  IF (F >= 1 AND F <= 100) OR (F >= 200 AND F <= 300)
+
+    EZT:    IF F NE 1 THRU 100 200 THRU 300
+    COBOL:  IF (F < 1 OR F > 100) AND (F < 200 OR F > 300)
+            (De Morgan: 'F not in any range' = 'F outside EVERY range')
+
+  Always repeat the field name on BOTH sides of every AND/OR; wrap each
+  range in parentheses when there is more than one.  The word THRU
   remains valid in COBOL only for PERFORM ranges (PERFORM A THRU B);
   it is INVALID inside an IF condition — never carry an EZT-style
   'IF FIELD low THRU high' through to the COBOL output.
