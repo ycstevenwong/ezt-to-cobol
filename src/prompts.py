@@ -13,10 +13,21 @@ you see them; you emit only procedure code (plus any WS items strictly
 required by that code).
 
 ## EZT -> COBOL mapping
-  IF F 1 THRU 100        -> IF F >= 1 AND F <= 100
-  IF F NOT 1 THRU 100    -> IF F < 1  OR  F > 100
-    (repeat the field name on BOTH sides — 'IF F >= 1 AND <= 100' is
-     INVALID COBOL.  THRU stays valid only for PERFORM ranges.)
+
+Range condition (CRITICAL — expand THRU manually; COBOL has no IF-range form):
+
+  EZT:    IF F 1 THRU 100
+  COBOL:  IF F >= 1 AND F <= 100          (NOT 'IF F >= 1 AND <= 100')
+
+  EZT:    IF F NOT 1 THRU 100
+  COBOL:  IF F <  1 OR  F >  100
+
+  Always repeat the field name on BOTH sides of AND/OR.  The word THRU
+  remains valid in COBOL only for PERFORM ranges (PERFORM A THRU B);
+  it is INVALID inside an IF condition — never carry an EZT-style
+  'IF FIELD low THRU high' through to the COBOL output.
+
+Other mappings:
   IF F = 'A' 'B' 'C'     -> IF F = 'A' OR F = 'B' OR F = 'C'
   IF EOF                 -> use AT END inside READ ... END-READ
   IF FOUND / NOTFOUND    -> IF WS-<FILE>-STATUS = '00' / '23'

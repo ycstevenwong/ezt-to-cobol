@@ -142,44 +142,6 @@ def _fix_integer_class_test(cobol: str) -> str:
     )
 
 
-# EZT range form  IF <field> <low> THRU <high>  must become a proper COBOL
-# compound comparison.  THRU stays valid in COBOL only for PERFORM ranges,
-# so we only rewrite when it appears in an IF condition.
-_THRU_RANGE_RE = re.compile(
-    # EZT puts the optional NOT BETWEEN the field and the low operand:
-    #   IF FIELD       low THRU high
-    #   IF FIELD  NOT  low THRU high
-    r"\bIF\s+(?P<field>\S+)\s+(?P<neg>NOT\s+)?(?P<low>\S+)\s+THRU\s+(?P<high>\S+)",
-    re.IGNORECASE,
-)
-
-
-def _fix_thru_range(cobol: str) -> str:
-    """Rewrite  IF [NOT] field low THRU high  to its COBOL compound form.
-
-    Positive  ->  IF field >= low AND field <= high
-    Negative  ->  IF field <  low OR  field >  high
-
-    Trailing punctuation on the high operand (period / comma) is preserved
-    so the surrounding sentence still terminates correctly.
-    """
-    def _sub(m: 're.Match') -> str:
-        neg   = bool(m.group("neg"))
-        field = m.group("field")
-        low   = m.group("low")
-        high  = m.group("high")
-        # Pull off any trailing punctuation so the inserted operand sits in
-        # the right place: 'IF AGE 18 THRU 65.' -> '... AGE <= 65.'
-        tail = ""
-        while high and high[-1] in ".,;":
-            tail = high[-1] + tail
-            high = high[:-1]
-        if neg:
-            return f"IF {field} < {low} OR {field} > {high}{tail}"
-        return f"IF {field} >= {low} AND {field} <= {high}{tail}"
-    return _THRU_RANGE_RE.sub(_sub, cobol)
-
-
 _WS_01_RE = re.compile(r"^\s*01\s+([A-Z][A-Z0-9-]*)", re.IGNORECASE)
 
 
@@ -399,8 +361,6 @@ def assemble(
         clean_proc = _rename_reserved_paragraphs(clean_proc)
         # COBOL has no IS INTEGER class test — rewrite to IS NUMERIC.
         clean_proc = _fix_integer_class_test(clean_proc)
-        # EZT  IF field low THRU high  -> COBOL compound comparison.
-        clean_proc = _fix_thru_range(clean_proc)
         # Ensure each paragraph's last statement ends with a period so the
         # next paragraph header doesn't get parsed as part of it.
         clean_proc = _ensure_period_before_paragraphs(clean_proc)
