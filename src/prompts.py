@@ -484,8 +484,18 @@ The DATA DIVISION context above already provides:
 Declare a new 01-level item in the WORKING-STORAGE block ONLY when the
 procedure code references a variable that is NOT in the provided context.
 The print-line layouts above are pre-built — you only need to MOVE the
-source fields into the WS-DTL-<FLD> subfields and WRITE the FD record
+source fields into the generated subfields and WRITE the FD record
 FROM the layout.
+
+Above every print-line layout that contains field references the DATA
+DIVISION context has comment lines of the form:
+       * <LAYOUT-NAME> — MOVE source fields into these subfields:
+       *   <EZT-FIELD-NAME>  (PIC ...)  →  <GENERATED-SUBFIELD-NAME>
+Use these mappings verbatim — the LEFT-hand name is the EZT source you
+read from, the RIGHT-hand name is the target subfield that already
+exists in WORKING-STORAGE and that you must MOVE into.  Do NOT invent
+your own subfield names.  COBOL identifiers cannot exceed 30 characters,
+so the generated targets are already sized for you.
 
 Common cases that DO need a declaration:
   • WS-EOF flag for AT END inside a READ loop

@@ -588,6 +588,71 @@ def _strip_ws_prefix(name: str) -> str:
     return name[3:] if upper.startswith("WS-") else name
 
 
+_MAX_NAME = 30   # COBOL identifier length limit
+
+
+def _build_sub_name(sub_prefix: str, source_field: str) -> str:
+    """Build a unique-ish subfield name from a source field reference.
+
+    Format: ``<sub_prefix>-<source_stem>``, where source_stem is the field
+    name without a leading 'WS-'.  If the combined name would exceed COBOL's
+    30-char identifier limit, the source stem is right-truncated.
+    """
+    stem = _strip_ws_prefix(source_field)
+    full = f"{sub_prefix}-{stem}"
+    if len(full) <= _MAX_NAME:
+        return full
+    keep = _MAX_NAME - len(sub_prefix) - 1   # 1 for the connecting hyphen
+    if keep <= 0:
+        return full[:_MAX_NAME]
+    return f"{sub_prefix}-{stem[:keep]}"
+
+
+def _field_pic(field: Union[EZTField, EZTDefine]) -> str:
+    return _pic(field.type, field.length, field.decimals)
+
+
+def _gen_field_map_comments(
+    layout_name: str,
+    sub_prefix:  str,
+    fragments:   List[_ColFragment],
+    lookup:      Optional[Dict[str, Union[EZTField, EZTDefine]]] = None,
+) -> List[str]:
+    """Emit comment lines mapping source EZT fields to generated subfields.
+
+    These appear in the WORKING-STORAGE SECTION above the layout, giving
+    the LLM the EZT-name → generated-name correspondence so its MOVE
+    statements target the right destination.
+    """
+    field_refs = [f for f in fragments if f.field]
+    if not field_refs:
+        return []
+    out = [f"      * {layout_name} — MOVE source fields into these subfields:"]
+    for frag in sorted(field_refs, key=lambda f: f.col):
+        sub = _build_sub_name(sub_prefix, frag.field)
+        fld = lookup.get(frag.field) if (lookup and frag.field) else None
+        pic_hint = f" ({_field_pic(fld)})" if fld else ""
+        out.append(f"      *   {frag.field}{pic_hint}  →  {sub}")
+    return out
+
+
+def _gen_dtl_map_comments(
+    rpt:    str,
+    fields: List[str],
+    lookup: Optional[Dict[str, Union[EZTField, EZTDefine]]] = None,
+) -> List[str]:
+    """Emit comment lines for the auto-PRINT detail layout subfields."""
+    if not fields:
+        return []
+    out = [f"      * WS-{rpt}-DTL — MOVE source fields into these subfields:"]
+    for fname in fields:
+        sub = f"WS-DTL-{fname}"[:_MAX_NAME]
+        fld = lookup.get(fname.upper()) if lookup else None
+        pic_hint = f" ({_field_pic(fld)})" if fld else ""
+        out.append(f"      *   {fname}{pic_hint}  →  {sub}")
+    return out
+
+
 def _gen_positioned_line_block(
     layout_name: str,
     sub_prefix:  str,
@@ -639,14 +704,17 @@ def _gen_positioned_line_block(
             col_w = min(natural, max_w, max(0, width - (cur_col - 1)))
             if col_w <= 0:
                 break
-            sub_name = f"{sub_prefix}-{_strip_ws_prefix(frag.field)}"[:30]
+            sub_name = _build_sub_name(sub_prefix, frag.field)
             items.append((sub_name, f"PIC X({col_w})", ""))
             cur_col += col_w
 
     trailing = width - (cur_col - 1)
     if trailing > 0:
         items.append(("FILLER", f"PIC X({trailing})", "VALUE SPACES"))
-    return _layout_block(layout_name, items)
+    # Prepend a comment block so the LLM knows which generated subfield
+    # corresponds to each EZT source field referenced in the COL clauses.
+    comments = _gen_field_map_comments(layout_name, sub_prefix, fragments, lookup)
+    return comments + _layout_block(layout_name, items)
 
 
 def _short_suffix(kind: str, line_num: Optional[int]) -> str:
@@ -700,12 +768,14 @@ def _gen_dtl_block(rpt: str, fields: List[str],
             col_w = _display_width(fld.type, fld.length, fld.decimals)
         else:
             col_w = 10
-        items.append((f"WS-DTL-{fname}", f"PIC X({col_w})", ""))
+        sub_name = f"WS-DTL-{fname}"[:_MAX_NAME]
+        items.append((sub_name, f"PIC X({col_w})", ""))
         used += col_w
     trailing = width - used
     if trailing > 0:
         items.append(("FILLER", f"PIC X({trailing})", "VALUE SPACES"))
-    return _layout_block(f"WS-{rpt}-DTL", items)
+    return (_gen_dtl_map_comments(rpt, fields, lookup)
+            + _layout_block(f"WS-{rpt}-DTL", items))
 
 
 def _gen_hdg_block(rpt: str, fields: List[str],
