@@ -325,6 +325,63 @@ def gen_file_section(files: List[EZTFile]) -> str:
 
 # ── WORKING-STORAGE ─────────────────────────────────────────────────────────────
 
+
+def _ws_subfield_value_suffix(sf) -> str:
+    """Build the ' VALUE ...' suffix for a WS subfield (or empty string)."""
+    val = getattr(sf, "value", None)
+    if val is None:
+        return ""
+    ftype = sf.type.upper()
+    if ftype in ("N", "P", "B", "U") and val in ("0", ""):
+        return " VALUE ZERO"
+    if ftype in ("N", "P", "B", "U"):
+        return f" VALUE {val}"
+    return f" VALUE '{val}'"
+
+
+def _render_ws_subtree(nodes: List[_TreeNode], depth: int,
+                       cur: int, end: int) -> List[str]:
+    """Render WS subfields with REDEFINES for overlapping (contained) groups.
+
+    A subfield whose byte range sits entirely inside an earlier subfield's
+    range becomes a 10-level child of a `FILLER REDEFINES <parent>` block;
+    a flat list of non-overlapping siblings just emits sequentially as
+    05 items.
+
+    Mirrors _render_subtree's depth/level/indent conventions but knows
+    about EZTWSSubfield's VALUE clauses (which file-section fields don't
+    have).
+    """
+    indent = " " * (7 + depth * 4)
+    level  = f"{depth * 5:02d}"
+    prefix = f"{indent}{level}  "
+    out: List[str] = []
+
+    for node in nodes:
+        sf = node.field
+        gap = sf.start - cur
+        if gap > 0:
+            out.append(_field_line(prefix, "FILLER", f"PIC X({gap})"))
+        sf_pic = _pic(sf.type, sf.length, sf.decimals) + _occurs(sf.occurs)
+        sf_pic += _ws_subfield_value_suffix(sf)
+        out.append(_field_line(prefix, _safe_name(sf.name), sf_pic))
+
+        if node.children:
+            # Overlapping subfields → wrap them in a FILLER REDEFINES of
+            # the just-emitted subfield, nested one level deeper.
+            out.append(f"{prefix}FILLER REDEFINES {_safe_name(sf.name)}.")
+            out.extend(_render_ws_subtree(
+                node.children, depth + 1, sf.start, sf.end
+            ))
+
+        cur = sf.end + 1
+
+    trailing = end - cur + 1
+    if trailing > 0:
+        out.append(_field_line(prefix, "FILLER", f"PIC X({trailing})"))
+    return out
+
+
 def gen_working_storage(defines: List[EZTDefine]) -> str:
     lines = []
     for d in defines:
@@ -355,29 +412,19 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
                 lines.append(f"{_A}01  {_safe_name(d.name)}.")
                 lines.append(_field_line(f"{_B}05  ", full_name, pic_str + val_clause))
                 lines.append(f"{_B}05  FILLER REDEFINES {full_name}.")
-                sub_prefix = f"{_C}10  "
+                start_depth = 2   # subfields nest under the REDEFINES at 10-level
             else:
                 # Put the group VALUE (if any) on the 01 line itself.
                 lines.append(f"{_A}01  {_safe_name(d.name)}{val_clause}.")
-                sub_prefix = f"{_B}05  "
-            cur = 1
-            for sf in sorted(d.subfields, key=lambda s: s.start):
-                gap = sf.start - cur
-                if gap > 0:
-                    lines.append(_field_line(sub_prefix, "FILLER", f"PIC X({gap})"))
-                sf_pic = _pic(sf.type, sf.length, sf.decimals) + _occurs(sf.occurs)
-                if sf.value is not None:
-                    if sf.type.upper() in ("N", "P", "B", "U") and sf.value in ("0", ""):
-                        sf_pic += " VALUE ZERO"
-                    elif sf.type.upper() in ("N", "P", "B", "U"):
-                        sf_pic += f" VALUE {sf.value}"
-                    else:
-                        sf_pic += f" VALUE '{sf.value}'"
-                lines.append(_field_line(sub_prefix, _safe_name(sf.name), sf_pic))
-                cur = sf.end + 1
-            trailing = d.physical_bytes - cur + 1
-            if trailing > 0:
-                lines.append(_field_line(sub_prefix, "FILLER", f"PIC X({trailing})"))
+                start_depth = 1   # subfields hang directly off the 01 at 05-level
+            # Build a containment tree from the subfields so any one that's
+            # fully inside another becomes a REDEFINES child (e.g. DATE.YYYY
+            # / DATE.MM / DATE.DD inside DATE-FIELD).  Non-overlapping
+            # siblings just emit sequentially.
+            roots = _build_tree(d.subfields)
+            lines.extend(_render_ws_subtree(
+                roots, start_depth, cur=1, end=d.physical_bytes
+            ))
         else:
             full_line = f"{_A}01  {d.name:<33} {pic_str}{val_clause}{_occurs(d.occurs)}."
             if len(full_line) <= 72 or not val_clause:
