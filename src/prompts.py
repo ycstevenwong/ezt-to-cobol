@@ -191,13 +191,30 @@ with STOP RUN.  STOP RUN appears ONLY in MAIN-PROCESS.
        MAIN-PROCESS-EXIT.
            EXIT.
 
-OPEN-FILES opens each file and STOPs if WS-<FILE>-STATUS > '00'.
-CLOSE-FILES closes each file.  MAIN-LOGIC drives a READ loop and calls
+OPEN-FILES opens each file and checks its status; on failure DISPLAY
+an error message and STOP RUN.  Use this exact shape for each file:
+
+       OPEN-FILES.
+           OPEN INPUT INFILE
+           IF WS-INFILE-STATUS NOT = '00'
+               DISPLAY 'ERROR OPENING INFILE STATUS: ' WS-INFILE-STATUS
+               STOP RUN
+           END-IF
+           OPEN OUTPUT RPTFILE
+           IF WS-RPTFILE-STATUS NOT = '00'
+               DISPLAY 'ERROR OPENING RPTFILE STATUS: ' WS-RPTFILE-STATUS
+               STOP RUN
+           END-IF.
+       OPEN-FILES-EXIT.
+           EXIT.
+
+CLOSE-FILES closes each file (one CLOSE per file, no status check
+unless EZT explicitly cares).  MAIN-LOGIC drives a READ loop and calls
 PROCESS-RECORD per record.  Any  PRINT <rpt>  in PROCESS-RECORD becomes
 PERFORM <RPT>-PRINT-RTN THRU <RPT>-PRINT-RTN-EXIT.
 
-Omit OPEN-FILES / CLOSE-FILES for JOB INPUT NULL.  Omit the READ loop
-for batch-compute programs.
+Omit OPEN-FILES / CLOSE-FILES (and their PERFORMs from MAIN-PROCESS)
+for JOB INPUT NULL.  Omit the READ loop for batch-compute programs.
 
 ━━ COBOL RULES ━━
 Period rules (most critical):
