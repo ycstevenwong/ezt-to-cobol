@@ -378,10 +378,22 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
 
 
 @dataclass
+class _ColFragment:
+    """One COL-positioned text fragment on a TITLE/HEADING/LINE/FOOTING line."""
+    col:  int   # 1-based column position
+    text: str
+
+
+@dataclass
 class _ReportLine:
-    """One text line from a numbered TITLE/HEADING/LINE/FOOTING directive."""
-    line_num: Optional[int]   # 1-based on the report page; None when omitted
-    text:     str
+    """One text line from a numbered TITLE/HEADING/LINE/FOOTING directive.
+
+    Either `text` is set (a single centered string) OR `fragments` is set
+    (one or more COL-positioned pieces on the same line).  Never both.
+    """
+    line_num:  Optional[int] = None    # 1-based page line; None when omitted
+    text:      str                      = ""
+    fragments: List[_ColFragment]       = field(default_factory=list)
 
 
 @dataclass
@@ -401,18 +413,79 @@ def _strip_quotes(s: str) -> str:
     return s
 
 
-def _parse_text_line(rest: str) -> _ReportLine:
-    """Parse a directive payload of either  NN 'text'  or  'text'  (no number).
+def _tokenize_directive(s: str) -> List[str]:
+    """Split a directive payload into tokens, keeping quoted strings whole.
 
-    EZT report directives that take a positional line number look like
-    `TITLE 01 'THIS IS THE CENTRE'` or `LINE 02 'text'`.  The number is
-    optional — when absent the line is treated as unnumbered (None).
+    Handles single and double quotes; doubled quotes inside a literal
+    ('It''s') are treated as an escaped quote, not as a terminator.
     """
-    tokens = rest.split(None, 1)
-    if tokens and tokens[0].isdigit():
-        return _ReportLine(line_num=int(tokens[0]),
-                           text=_strip_quotes(tokens[1]) if len(tokens) > 1 else "")
-    return _ReportLine(line_num=None, text=_strip_quotes(rest))
+    tokens: List[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if c.isspace():
+            i += 1
+            continue
+        if c in ("'", '"'):
+            q, j = c, i + 1
+            while j < n:
+                if s[j] == q:
+                    if j + 1 < n and s[j + 1] == q:
+                        j += 2
+                        continue
+                    break
+                j += 1
+            tokens.append(s[i:j + 1] if j < n else s[i:])
+            i = j + 1
+        else:
+            j = i
+            while j < n and not s[j].isspace():
+                j += 1
+            tokens.append(s[i:j])
+            i = j
+    return tokens
+
+
+def _parse_text_line(rest: str) -> _ReportLine:
+    """Parse a TITLE/HEADING/LINE/FOOTING payload.
+
+    Supported forms (line number is optional throughout):
+      NN 'text'                                   → centered text
+      NN COL c 'text' [COL c 'text' ...]          → COL-positioned
+      'text'                                       → centered, no line num
+      COL c 'text' ...                             → positioned, no line num
+    """
+    toks = _tokenize_directive(rest)
+
+    # Optional leading line number — only consume it if the next token
+    # is NOT a quoted string starting with that digit's own content
+    # (i.e. the digit really is a position marker, not the title text).
+    line_num: Optional[int] = None
+    if toks and toks[0].isdigit() and (len(toks) == 1 or not toks[1].isdigit()):
+        line_num = int(toks[0])
+        toks = toks[1:]
+
+    # COL-positioned form: zero or more "COL n 'text'" triples.
+    if toks and toks[0].upper() == "COL":
+        frags: List[_ColFragment] = []
+        i = 0
+        while i + 2 < len(toks) + 1:
+            if i + 2 >= len(toks) or toks[i].upper() != "COL":
+                break
+            try:
+                col = int(toks[i + 1])
+            except ValueError:
+                break
+            text_tok = toks[i + 2]
+            if not (text_tok.startswith("'") or text_tok.startswith('"')):
+                break
+            frags.append(_ColFragment(col=col, text=_strip_quotes(text_tok)))
+            i += 3
+        return _ReportLine(line_num=line_num, fragments=frags)
+
+    # Centered form: take the (single) quoted string literal.
+    text = _strip_quotes(toks[0]) if toks else ""
+    return _ReportLine(line_num=line_num, text=text)
 
 
 def _parse_report_directives(content: str) -> _ReportDirectives:
@@ -496,6 +569,52 @@ def _gen_text_line_block(layout_name: str, text: str, width: int) -> List[str]:
     if rpad > 0:
         items.append(("FILLER", f"PIC X({rpad})", "VALUE SPACES"))
     return _layout_block(layout_name, items)
+
+
+def _gen_positioned_line_block(layout_name: str,
+                               fragments: List[_ColFragment],
+                               width: int) -> List[str]:
+    """Emit a layout with text fragments anchored to specific columns.
+
+    Used for  TITLE NN COL c 'text' COL c 'text'  and the like.  Each
+    fragment becomes a FILLER subfield with its literal VALUE, separated
+    from neighbours by a FILLER gap sized to land on the requested column.
+    Overlapping fragments are clipped to the column of the next one.
+    """
+    if not fragments:
+        return []
+    items: List[Tuple[str, str, str]] = []
+    cur_col = 1
+    for frag in sorted(fragments, key=lambda f: f.col):
+        if frag.col > cur_col:
+            gap = frag.col - cur_col
+            items.append(("FILLER", f"PIC X({gap})", "VALUE SPACES"))
+            cur_col += gap
+        elif frag.col < cur_col:
+            # Overlap with previous fragment — skip this one.
+            continue
+        text = frag.text
+        text_len = len(text)
+        if cur_col - 1 + text_len > width:
+            text_len = width - (cur_col - 1)
+            text = text[:text_len]
+        if text_len <= 0:
+            break
+        escaped = text.replace("'", "''")
+        items.append(("FILLER", f"PIC X({text_len})", f"VALUE '{escaped}'"))
+        cur_col += text_len
+
+    trailing = width - (cur_col - 1)
+    if trailing > 0:
+        items.append(("FILLER", f"PIC X({trailing})", "VALUE SPACES"))
+    return _layout_block(layout_name, items)
+
+
+def _gen_line_block(layout_name: str, line: _ReportLine, width: int) -> List[str]:
+    """Dispatch to the centered or positioned emitter based on the line shape."""
+    if line.fragments:
+        return _gen_positioned_line_block(layout_name, line.fragments, width)
+    return _gen_text_line_block(layout_name, line.text, width)
 
 
 _LEFT_MARGIN = 1   # spaces before the first column on a detail/heading line
@@ -607,19 +726,19 @@ def gen_report_ws(report_name: str, content: str,
         directives = _parse_report_directives(content)
         lookup = _build_field_lookup(preamble)
         for tl in directives.titles:
-            lines.extend(_gen_text_line_block(
+            lines.extend(_gen_line_block(
                 _numbered_name(f"WS-{rpt}-TITLE", tl.line_num),
-                tl.text, print_width
+                tl, print_width
             ))
         for hl in directives.headings:
-            lines.extend(_gen_text_line_block(
+            lines.extend(_gen_line_block(
                 _numbered_name(f"WS-{rpt}-HDG", hl.line_num),
-                hl.text, print_width
+                hl, print_width
             ))
         for ln in directives.lines:
-            lines.extend(_gen_text_line_block(
+            lines.extend(_gen_line_block(
                 _numbered_name(f"WS-{rpt}-LINE", ln.line_num),
-                ln.text, print_width
+                ln, print_width
             ))
         if directives.print_fields:
             # Column-heading row auto-derived from PRINT field names.  Only
@@ -633,9 +752,9 @@ def gen_report_ws(report_name: str, content: str,
                 rpt, directives.print_fields, lookup, print_width
             ))
         for fl in directives.footings:
-            lines.extend(_gen_text_line_block(
+            lines.extend(_gen_line_block(
                 _numbered_name(f"WS-{rpt}-FOOT", fl.line_num),
-                fl.text, print_width
+                fl, print_width
             ))
         if directives.control_field:
             ctl = lookup.get(directives.control_field.upper())
