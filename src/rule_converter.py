@@ -608,22 +608,43 @@ def _safe_name(name: str) -> str:
     return name or "FILLER"   # never return empty; FILLER is a safe fallback
 
 
-def _build_sub_name(sub_prefix: str, source_field: str) -> str:
+def _build_sub_name(sub_prefix: str, source_field: str,
+                    used: Optional[set] = None) -> str:
     """Build a unique-ish subfield name from a source field reference.
 
     Format: ``<sub_prefix>-<source_stem>``, where source_stem is the field
     name without a leading 'WS-'.  If the combined name would exceed COBOL's
     30-char identifier limit the stem is right-truncated; trailing hyphens
     that fall on the cut point are stripped.
+
+    When `used` is given, the returned name is guaranteed unique within
+    that set — if truncation would collide with a name already in `used`
+    (common when two long source names share a long prefix), a numeric
+    -N suffix is added (still within 30 chars).  The chosen name is
+    added to `used` on return.
     """
     stem = _strip_ws_prefix(source_field)
     full = f"{sub_prefix}-{stem}"
-    if len(full) <= _MAX_NAME:
-        return _safe_name(full)
-    keep = _MAX_NAME - len(sub_prefix) - 1   # 1 for the connecting hyphen
-    if keep <= 0:
-        return _safe_name(full)
-    return _safe_name(f"{sub_prefix}-{stem[:keep]}")
+    if len(full) > _MAX_NAME:
+        keep = _MAX_NAME - len(sub_prefix) - 1   # 1 for the connecting hyphen
+        if keep > 0:
+            full = f"{sub_prefix}-{stem[:keep]}"
+    candidate = _safe_name(full)
+
+    if used is None or candidate not in used:
+        if used is not None:
+            used.add(candidate)
+        return candidate
+
+    # Collision — append -N, shrinking the base if necessary to fit 30 chars.
+    for n in range(2, 1000):
+        suffix = f"-{n}"
+        max_base = _MAX_NAME - len(suffix)
+        new_candidate = (candidate[:max_base].rstrip("-") + suffix)
+        if new_candidate not in used:
+            used.add(new_candidate)
+            return new_candidate
+    return candidate   # give up — should never realistically happen
 
 
 def _field_pic(field: Union[EZTField, EZTDefine]) -> str:
@@ -637,40 +658,73 @@ def _format_map_line(source: str, target: str,
     return f"      *   {source}{pic_hint} -> {target}"
 
 
+def _resolve_subfield_names(
+    sub_prefix: str,
+    fragments:  List[_ColFragment],
+) -> Dict[str, str]:
+    """Resolve source-field -> unique target-subfield name for one layout.
+
+    Walks fragments in COL order so the dedup counter (-2, -3, ...) lands
+    on the LATER occurrence when long names would otherwise collide after
+    30-char truncation.  Returns a dict keyed by the source field name.
+    """
+    mapping: Dict[str, str] = {}
+    used: set = set()
+    for frag in sorted([f for f in fragments if f.field], key=lambda f: f.col):
+        if frag.field not in mapping:
+            mapping[frag.field] = _build_sub_name(sub_prefix, frag.field, used)
+    return mapping
+
+
 def _gen_field_map_comments(
     layout_name: str,
-    sub_prefix:  str,
     fragments:   List[_ColFragment],
+    name_map:    Dict[str, str],
     lookup:      Optional[Dict[str, Union[EZTField, EZTDefine]]] = None,
 ) -> List[str]:
     """Emit comment lines mapping source EZT fields to generated subfields.
 
-    These appear in the WORKING-STORAGE SECTION above the layout, giving
-    the LLM the EZT-name -> generated-name correspondence so its MOVE
-    statements target the right destination.
+    Uses the pre-resolved `name_map` (source -> target) so the comment
+    block lists exactly the same names the layout below emits — no risk
+    of the comment naming one identifier and the 05-line another.
     """
     field_refs = [f for f in fragments if f.field]
     if not field_refs:
         return []
     out = [f"      * {layout_name} MOVE-targets:"]
     for frag in sorted(field_refs, key=lambda f: f.col):
-        sub = _build_sub_name(sub_prefix, frag.field)
+        sub = name_map.get(frag.field, "?")
         fld = lookup.get(frag.field) if (lookup and frag.field) else None
         out.append(_format_map_line(frag.field, sub, fld))
     return out
 
 
+def _resolve_dtl_names(fields: List[str]) -> Dict[str, str]:
+    """source-field -> unique WS-DTL-<...> target name, deduped across the
+    list so long names that truncate to the same 30 chars don't collide.
+    """
+    mapping: Dict[str, str] = {}
+    used: set = set()
+    for fname in fields:
+        if fname in mapping:
+            continue
+        # Reuse _build_sub_name with the WS-DTL prefix so dedup logic applies.
+        mapping[fname] = _build_sub_name("WS-DTL", fname, used)
+    return mapping
+
+
 def _gen_dtl_map_comments(
-    rpt:    str,
-    fields: List[str],
-    lookup: Optional[Dict[str, Union[EZTField, EZTDefine]]] = None,
+    rpt:      str,
+    fields:   List[str],
+    name_map: Dict[str, str],
+    lookup:   Optional[Dict[str, Union[EZTField, EZTDefine]]] = None,
 ) -> List[str]:
     """Emit comment lines for the auto-PRINT detail layout subfields."""
     if not fields:
         return []
     out = [f"      * WS-{rpt}-DTL MOVE-targets:"]
     for fname in fields:
-        sub = _safe_name(f"WS-DTL-{fname}")
+        sub = name_map.get(fname, _safe_name(f"WS-DTL-{fname}"))
         fld = lookup.get(fname.upper()) if lookup else None
         out.append(_format_map_line(fname, sub, fld))
     return out
@@ -701,6 +755,11 @@ def _gen_positioned_line_block(
         else:
             max_widths.append(max(0, width - frag.col + 1))
 
+    # Resolve subfield names ONCE so the comment block and the 05 lines
+    # below use the same dedup'd identifiers when long source names would
+    # otherwise collide after 30-char truncation.
+    name_map = _resolve_subfield_names(sub_prefix, fragments)
+
     items: List[Tuple[str, str, str]] = []
     cur_col = 1
     for frag, max_w in zip(sorted_frags, max_widths):
@@ -727,16 +786,16 @@ def _gen_positioned_line_block(
             col_w = min(natural, max_w, max(0, width - (cur_col - 1)))
             if col_w <= 0:
                 break
-            sub_name = _build_sub_name(sub_prefix, frag.field)
+            sub_name = name_map.get(frag.field, _build_sub_name(sub_prefix, frag.field))
             items.append((sub_name, f"PIC X({col_w})", ""))
             cur_col += col_w
 
     trailing = width - (cur_col - 1)
     if trailing > 0:
         items.append(("FILLER", f"PIC X({trailing})", "VALUE SPACES"))
-    # Prepend a comment block so the LLM knows which generated subfield
-    # corresponds to each EZT source field referenced in the COL clauses.
-    comments = _gen_field_map_comments(layout_name, sub_prefix, fragments, lookup)
+    # Prepend a comment block listing the same source -> target mapping
+    # the 05 lines emit (so the LLM sees the exact names to MOVE into).
+    comments = _gen_field_map_comments(layout_name, fragments, name_map, lookup)
     return comments + _layout_block(layout_name, items)
 
 
@@ -777,6 +836,9 @@ def _gen_dtl_block(rpt: str, fields: List[str],
                    width: int) -> List[str]:
     if not fields:
         return []
+    # Resolve subfield names once (deduped) and share with the comment block.
+    name_map = _resolve_dtl_names(fields)
+
     items: List[Tuple[str, str, str]] = []
     used = 0
     if _LEFT_MARGIN:
@@ -791,13 +853,13 @@ def _gen_dtl_block(rpt: str, fields: List[str],
             col_w = _display_width(fld.type, fld.length, fld.decimals)
         else:
             col_w = 10
-        sub_name = _safe_name(f"WS-DTL-{fname}")
+        sub_name = name_map[fname]
         items.append((sub_name, f"PIC X({col_w})", ""))
         used += col_w
     trailing = width - used
     if trailing > 0:
         items.append(("FILLER", f"PIC X({trailing})", "VALUE SPACES"))
-    return (_gen_dtl_map_comments(rpt, fields, lookup)
+    return (_gen_dtl_map_comments(rpt, fields, name_map, lookup)
             + _layout_block(f"WS-{rpt}-DTL", items))
 
 

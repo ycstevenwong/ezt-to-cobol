@@ -120,6 +120,21 @@ added scaffolding is the MAIN-PROCESS / OPEN-FILES / MAIN-LOGIC /
 CLOSE-FILES skeleton plus the <RPT>-* paragraphs required by report
 scaffolding.
 
+NEVER create a "type-variant" copy of a variable that already exists.
+Examples of variables you must NOT declare:
+  WS-TEST-ALPHA  / WS-TEST-A   (because WS-TEST is already numeric)
+  WS-CUSTNO-NUM  / WS-CUSTNO-N (because WS-CUSTNO is already alpha)
+  WS-DATE-DISP / WS-DATE-CHAR  (because WS-DATE already exists)
+
+COBOL's MOVE statement converts between alphanumeric, zoned numeric,
+and packed numeric automatically — you do NOT need an intermediate
+variable in a different PIC.  Use the original field directly:
+       MOVE WS-TEST TO WS-PRINT-FIELD            (not via WS-TEST-ALPHA)
+       MOVE WS-CUSTNO TO WS-DTL-CUSTNO           (auto numeric -> alpha)
+The ONE legitimate reason to add a new field is an edited display PIC
+(PIC Z…, PIC -9…, PIC 99/99/9999, etc.) that COBOL needs for format
+conversion — and even then, declare it ONCE, not per source field.
+
 ━━ PROGRAM SKELETON ━━
 MAIN-PROCESS PERFORMS lower paragraphs (THRU para-EXIT form) and ends
 with STOP RUN.  STOP RUN appears ONLY in MAIN-PROCESS.
