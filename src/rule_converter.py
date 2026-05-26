@@ -1068,28 +1068,43 @@ def _inject_vsam_key(file: EZTFile) -> EZTFile:
     key_name = (file.name + "-KEY")[:30]
     if any(f.name.upper() == key_name.upper() for f in file.fields):
         return file
+
+    # Establish the target total record length BEFORE injection so the
+    # synthetic key occupies space WITHIN it, not on top of it.
+    if file.rec_length:
+        target = file.rec_length
+    elif file.fields:
+        target = max(f.end for f in file.fields)
+    else:
+        target = _VSAM_KEY_LEN
+
     key_field = EZTField(name=key_name, start=1, length=_VSAM_KEY_LEN, type="A")
-    shifted = [
-        EZTField(
+
+    # Shift every original field by the key length and clamp/drop any
+    # piece that would overflow the target — e.g. a single field that
+    # filled the whole record gets its length reduced by the key length.
+    shifted: List[EZTField] = []
+    for f in file.fields:
+        new_start = f.start + _VSAM_KEY_LEN
+        if new_start > target:
+            continue   # entire field shifted past the end
+        new_length = min(f.length, target - new_start + 1)
+        if new_length <= 0:
+            continue
+        shifted.append(EZTField(
             name=f.name,
-            start=f.start + _VSAM_KEY_LEN,
-            length=f.length,
+            start=new_start,
+            length=new_length,
             type=f.type,
             decimals=f.decimals,
             occurs=f.occurs,
             heading=f.heading,
-        )
-        for f in file.fields
-    ]
-    # Always preserve the EZT-declared total record length — the VSAM key
-    # occupies space WITHIN that length, not in addition to it.  Original
-    # fields shift down by the key length, and the trailing FILLER computed
-    # by _render_subtree absorbs the difference between the shifted layout
-    # and the (unchanged) RECORD CONTAINS value.
+        ))
+
     return EZTFile(
         name=file.name,
         org=file.org,
-        rec_length=file.rec_length,
+        rec_length=target,
         fields=[key_field] + shifted,
     )
 
