@@ -6,7 +6,8 @@ import re
 from src.assembler import split_ws_proc
 from src.parser import EZTSection, SectionType
 from src.prompts import SYSTEM_PROMPT, LOGIC_PROMPT
-from src.rule_converter import convert_file_def, convert_field_def
+from src.rule_converter import convert_file_def, convert_field_def, gen_report_ws
+from src.structured_parser import parse_preamble
 
 DEFAULT_MODEL    = "llama3.2"
 DEFAULT_BASE_URL = "http://localhost:11434/v1"
@@ -20,6 +21,14 @@ _RULE_BASED = {SectionType.FILE_DEF, SectionType.FIELD_DEF}
 # converted-output dict.  The assembler looks for this key after iterating
 # the rule-based sections.
 COMBINED_LOGIC_KEY = "logic:combined"
+
+
+def _report_ws_key(report_name: str) -> str:
+    """Key under which the rule-converter-generated per-report WS lives in
+    the converted-output dict.  `assemble` reads from here so the layouts
+    aren't regenerated.
+    """
+    return f"report_ws:{report_name}"
 
 
 def _section_key(section: EZTSection) -> str:
@@ -181,7 +190,26 @@ def convert_all(
             f" — ALREADY IN DATA DIVISION, DO NOT REDECLARE ===\n{cobol}"
         )
 
-    # 2. Single combined LLM call for every JOB + REPORT section.
+    # 2. Per-report WS layouts (counters, accumulators, TITLE/HDG/DTL/etc.).
+    #    Generated here — BEFORE the LLM call — so the layout names appear
+    #    in the context the LLM sees, and so the LLM's procedure code can
+    #    reference them without inventing its own.
+    preamble = parse_preamble(source) if source else None
+    for section in sections:
+        if section.type != SectionType.REPORT:
+            continue
+        py_ws = gen_report_ws(section.name, section.content, preamble=preamble)
+        if not py_ws:
+            continue
+        if verbose:
+            print(f"  → [report-ws] {section.name} (rule-based)", flush=True)
+        results[_report_ws_key(section.name)] = py_ws
+        context_chunks.append(
+            f"=== REPORT-WS ({section.name})"
+            f" — ALREADY IN DATA DIVISION, DO NOT REDECLARE ===\n{py_ws}"
+        )
+
+    # 3. Single combined LLM call for every JOB + REPORT section.
     logic_sections = [s for s in sections if s.type not in _RULE_BASED]
     if logic_sections:
         context = "\n\n".join(context_chunks)

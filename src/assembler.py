@@ -257,11 +257,14 @@ def assemble(
             ws_parts.append(clean)
 
         elif section.type == SectionType.REPORT:
-            # Python generates the per-report WS deterministically: counters,
-            # accumulators, and (when a preamble is available) the
-            # WS-{RPT}-TITLE / -HDG / -DTL / -FOOT line layouts as well.
-            # The LLM-generated procedure code is in the COMBINED_LOGIC key.
-            py_ws = gen_report_ws(section.name, section.content, preamble=preamble)
+            # Prefer the pre-generated layout that convert_all stashed under
+            # 'report_ws:<name>' — that's the same text the LLM saw in its
+            # context, so the procedure code references known identifiers.
+            # Fall back to generating locally for direct callers that
+            # bypass convert_all (tests, ad-hoc scripts).
+            py_ws = converted.get(f"report_ws:{section.name}")
+            if py_ws is None:
+                py_ws = gen_report_ws(section.name, section.content, preamble=preamble)
             if py_ws:
                 ws_parts.append(py_ws)
         # JOB sections contribute nothing here — their procedure code
