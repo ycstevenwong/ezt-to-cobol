@@ -1081,18 +1081,15 @@ def _inject_vsam_key(file: EZTFile) -> EZTFile:
         )
         for f in file.fields
     ]
-    # When original fields exist they shift down by the key length, so the
-    # total record grows by the same amount.  When no fields were declared,
-    # the key fits *within* the existing record (the leftover bytes become
-    # FILLER in the layout) — bumping rec_length would be wrong.
-    if file.fields and file.rec_length:
-        new_rec_length = file.rec_length + _VSAM_KEY_LEN
-    else:
-        new_rec_length = file.rec_length
+    # Always preserve the EZT-declared total record length — the VSAM key
+    # occupies space WITHIN that length, not in addition to it.  Original
+    # fields shift down by the key length, and the trailing FILLER computed
+    # by _render_subtree absorbs the difference between the shifted layout
+    # and the (unchanged) RECORD CONTAINS value.
     return EZTFile(
         name=file.name,
         org=file.org,
-        rec_length=new_rec_length,
+        rec_length=file.rec_length,
         fields=[key_field] + shifted,
     )
 
