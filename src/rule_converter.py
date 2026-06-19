@@ -1213,6 +1213,25 @@ def _fmt_guard(hook: Optional[CopybookHook], file_name: str) -> str:
     return template.format(file=file_name)
 
 
+def _hook_body(hook: CopybookHook, file_name: str) -> List[str]:
+    """Statements that go inside the IF guard for a hook-driven file event.
+
+    Order: each before_perform statement (with {file} substituted), then
+    the PERFORM line — either single-paragraph or THRU form depending on
+    whether perform_thru is set.
+    """
+    body: List[str] = []
+    for stmt in hook.before_perform:
+        body.append(f"               {stmt.format(file=file_name)}")
+    if hook.perform_thru:
+        body.append(
+            f"               PERFORM {hook.perform} THRU {hook.perform_thru}"
+        )
+    else:
+        body.append(f"               PERFORM {hook.perform}")
+    return body
+
+
 def gen_open_close_paragraphs(
     files: List[EZTFile],
     file_modes: Dict[str, str],
@@ -1237,7 +1256,7 @@ def gen_open_close_paragraphs(
         lines = [f"           OPEN {mode} {f.name}"]
         lines.append(f"           IF {_fmt_guard(open_hook, f.name)}")
         if open_hook:
-            lines.append(f"               PERFORM {open_hook.perform}")
+            lines.extend(_hook_body(open_hook, f.name))
         else:
             lines.append(
                 f"               DISPLAY 'ERROR OPENING {f.name} STATUS: ' "
@@ -1251,7 +1270,7 @@ def gen_open_close_paragraphs(
         lines = [f"           CLOSE {f.name}"]
         if close_hook:
             lines.append(f"           IF {_fmt_guard(close_hook, f.name)}")
-            lines.append(f"               PERFORM {close_hook.perform}")
+            lines.extend(_hook_body(close_hook, f.name))
             lines.append("           END-IF")
         return lines
 

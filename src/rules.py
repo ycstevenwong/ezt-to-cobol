@@ -22,17 +22,27 @@ class CopybookHook:
     (constants, error-message buffer) in one copybook and paragraphs in
     another sets two different names.  Set either to None to skip that
     division entirely; at least one must be present.
+
+    perform_thru enables the  PERFORM <perform> THRU <perform_thru>  form.
+    before_perform is an ordered list of statements emitted inside the IF
+    guard, BEFORE the PERFORM line — typical use is populating abend
+    variables (MOVE 10001 TO WS-ABEND-CODE, etc.).
     """
     copy_ws: str | None
     copy_procedure: str | None
     perform: str
+    perform_thru: str | None
+    before_perform: tuple[str, ...]
     when: str | None
 
 
 _DEFAULT_WHEN: dict[str, str] = {
-    "file_open_failure":  "WS-{file}-STATUS NOT = '00'",
-    "file_close_failure": "WS-{file}-STATUS NOT = '00'",
+    "file_open_failure":  "WS-{file}-STATUS NOT = ZEROES",
+    "file_close_failure": "WS-{file}-STATUS NOT = ZEROES",
 }
+
+# Top-level keys parsed separately from the per-event hooks.
+_NON_EVENT_KEYS = {"abend_ws"}
 
 
 def _opt_str(cfg: dict, key: str) -> str | None:
@@ -40,14 +50,22 @@ def _opt_str(cfg: dict, key: str) -> str | None:
     return str(v).strip() if v is not None else None
 
 
+def _opt_str_list(cfg: dict, key: str, *, event: str) -> tuple[str, ...]:
+    v = cfg.get(key)
+    if v is None:
+        return ()
+    if not isinstance(v, list):
+        raise ValueError(f"copybooks.yaml: {event!r}: {key!r} must be a list")
+    return tuple(str(s) for s in v)
+
+
 def load_copybooks() -> dict[str, CopybookHook]:
     """Return {event_name: CopybookHook}.  Empty dict if copybooks.yaml is absent."""
-    path = _RULES_DIR / "copybooks.yaml"
-    if not path.exists():
-        return {}
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    raw = _load_raw_copybooks_yaml()
     hooks: dict[str, CopybookHook] = {}
     for event, cfg in raw.items():
+        if event in _NON_EVENT_KEYS:
+            continue
         if not isinstance(cfg, dict):
             raise ValueError(f"copybooks.yaml: {event!r} must be a mapping")
         if "perform" not in cfg:
@@ -63,9 +81,32 @@ def load_copybooks() -> dict[str, CopybookHook]:
             copy_ws=copy_ws,
             copy_procedure=copy_procedure,
             perform=str(cfg["perform"]).strip(),
+            perform_thru=_opt_str(cfg, "perform_thru"),
+            before_perform=_opt_str_list(cfg, "before_perform", event=event),
             when=cfg.get("when", _DEFAULT_WHEN.get(event)),
         )
     return hooks
+
+
+def load_abend_ws() -> list[str]:
+    """Return the top-level abend_ws list from copybooks.yaml, or [] if absent.
+
+    Each entry is a free-form COBOL line (typically a 01-level declaration)
+    that the assembler splices into WORKING-STORAGE when any wired event
+    fires.  Comment out an item if your copybook already declares it.
+    """
+    raw = _load_raw_copybooks_yaml()
+    items = raw.get("abend_ws") or []
+    if not isinstance(items, list):
+        raise ValueError("copybooks.yaml: 'abend_ws' must be a list")
+    return [str(s) for s in items]
+
+
+def _load_raw_copybooks_yaml() -> dict:
+    path = _RULES_DIR / "copybooks.yaml"
+    if not path.exists():
+        return {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
 def general_rules_text() -> str:

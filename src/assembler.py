@@ -4,7 +4,7 @@ from typing import Dict, List, Tuple
 
 from src.parser import EZTSection, SectionType
 from src.rule_converter import gen_report_ws
-from src.rules import CopybookHook, load_copybooks
+from src.rules import CopybookHook, load_abend_ws, load_copybooks
 from src.structured_parser import parse_preamble
 
 # Synthetic key the converter stashes Python-generated OPEN/CLOSE paragraphs
@@ -463,6 +463,15 @@ def assemble(
     # ignored here (the YAML stays declarative for later phases).
     hooks = load_copybooks()
     ws_copies, proc_copies = _resolve_copy_lines(hooks, converted)
+
+    # abend_ws — global WS items referenced by before_perform MOVEs
+    # (WS-ABEND-CODE / WS-ABEND-MSG / WS-ABEND-STATUS by default).  Emitted
+    # only when at least one wired event fires; comment items out of YAML
+    # if your copybook already declares them.
+    if open_close_text:
+        abend_ws_items = load_abend_ws()
+        if abend_ws_items:
+            ws_parts.append("\n".join(abend_ws_items))
 
     # Build each division
     # COBOL PROGRAM-ID: letters, digits, hyphens only — strip anything else

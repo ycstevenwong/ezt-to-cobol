@@ -1,41 +1,61 @@
 # Copybook hooks.  Each entry maps an EVENT the generator detects (file
 # open, VSAM invalid key, SQL error, etc.) to the copybook(s) that should
-# handle it.  Two copybook slots, independent:
+# handle it.
 #
-#   copy_ws         Copybook to COPY into WORKING-STORAGE SECTION.
-#                   Use for shops whose error/util copybook declares WS
-#                   items (constants, status codes, message buffers).
-#                   Omit if the event needs no WS-side copybook.
+# Top-level:
+#   abend_ws         01-level declarations the converter adds to
+#                    WORKING-STORAGE whenever any wired event fires.
+#                    Comment out an item if your copybook already
+#                    declares it (otherwise the COBOL compiler will
+#                    reject the duplicate).
 #
-#   copy_procedure  Copybook to COPY into PROCEDURE DIVISION.  Use for
-#                   shops whose copybook defines the paragraph that
-#                   `perform` names.  Omit if the event needs no
-#                   PROCEDURE-side copybook.
+# Per-event fields:
+#   copy_ws          Copybook to COPY into WORKING-STORAGE SECTION
+#                    (optional; omit if no WS-side copybook).
+#   copy_procedure   Copybook to COPY into PROCEDURE DIVISION
+#                    (optional; omit if no PROCEDURE-side copybook).
+#                    At least one of copy_ws / copy_procedure required.
+#   perform          Paragraph the generator PERFORMs when the guard
+#                    fires.  Defined inside copy_procedure.
+#   perform_thru     (optional) Second paragraph for the THRU form —
+#                    emits  PERFORM <perform> THRU <perform_thru>.
+#                    Set this when your shop's convention is to wrap
+#                    the routine in a <name>-RTN / <name>-EXIT pair.
+#   before_perform   (optional) Ordered list of statements emitted
+#                    INSIDE the IF guard, BEFORE the PERFORM line.
+#                    Typical use: populate abend variables.
+#                    {file} is substituted with the FD name per file.
+#   when             (optional) IF-clause template.  Defaults to
+#                    "WS-{file}-STATUS NOT = ZEROES" for file_* events.
 #
-#   perform         Paragraph (defined inside copy_procedure) that the
-#                   generator PERFORMs when the event's guard fires.
-#
-#   when            (optional) IF-clause template spliced into the guard.
-#                   Tokens replaced by the generator:
-#                     {file}   -> the FD name (for file_* events)
-#                   If omitted, the generator uses a built-in default for
-#                   well-known events and no guard for the rest.
-#
-# At least one of copy_ws / copy_procedure must be set.  Same-name-both-
-# divisions is fine — just set both fields to the same value.
-# Missing event = generator falls back to its inline DISPLAY / STOP RUN.
+# Missing event = generator falls back to inline DISPLAY / STOP RUN.
+
+abend_ws:
+  - "       01  WS-ABEND-CODE       PIC 9(05) VALUE ZEROES."
+  - "       01  WS-ABEND-MSG        PIC X(40) VALUE SPACES."
+  - "       01  WS-ABEND-STATUS     PIC X(02) VALUE SPACES."
 
 file_open_failure:
   copy_ws:        ERRDATA
   copy_procedure: ERRRTN
   perform:        FILE-ERROR-RTN
-  when:           "WS-{file}-STATUS NOT = '00'"
+  perform_thru:   FILE-ERROR-EXIT
+  when:           "WS-{file}-STATUS NOT = ZEROES"
+  before_perform:
+    - "MOVE 10001 TO WS-ABEND-CODE"
+    - "MOVE 'INVALID {file} FILE OPEN' TO WS-ABEND-MSG"
+    - "MOVE WS-{file}-STATUS TO WS-ABEND-STATUS"
 
 file_close_failure:
   copy_ws:        ERRDATA
   copy_procedure: ERRRTN
   perform:        FILE-ERROR-RTN
-  when:           "WS-{file}-STATUS NOT = '00'"
+  perform_thru:   FILE-ERROR-EXIT
+  when:           "WS-{file}-STATUS NOT = ZEROES"
+  before_perform:
+    - "MOVE 10002 TO WS-ABEND-CODE"
+    - "MOVE 'INVALID {file} FILE CLOSE' TO WS-ABEND-MSG"
+    - "MOVE WS-{file}-STATUS TO WS-ABEND-STATUS"
 
 vsam_invalid_key:
   copy_ws:        VSAMDATA
