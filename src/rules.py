@@ -16,18 +16,28 @@ def _load(filename: str) -> dict:
 
 @dataclass(frozen=True)
 class CopybookHook:
-    copy: str
+    """One event -> {copybook for WS, copybook for PROCEDURE, paragraph, guard}.
+
+    copy_ws / copy_procedure are independent: a shop that puts WS items
+    (constants, error-message buffer) in one copybook and paragraphs in
+    another sets two different names.  Set either to None to skip that
+    division entirely; at least one must be present.
+    """
+    copy_ws: str | None
+    copy_procedure: str | None
     perform: str
-    sections: tuple[str, ...]
     when: str | None
 
 
-_ALLOWED_SECTIONS = ("working-storage", "procedure")
-_DEFAULT_SECTIONS: tuple[str, ...] = ("procedure",)
 _DEFAULT_WHEN: dict[str, str] = {
     "file_open_failure":  "WS-{file}-STATUS NOT = '00'",
     "file_close_failure": "WS-{file}-STATUS NOT = '00'",
 }
+
+
+def _opt_str(cfg: dict, key: str) -> str | None:
+    v = cfg.get(key)
+    return str(v).strip() if v is not None else None
 
 
 def load_copybooks() -> dict[str, CopybookHook]:
@@ -40,20 +50,19 @@ def load_copybooks() -> dict[str, CopybookHook]:
     for event, cfg in raw.items():
         if not isinstance(cfg, dict):
             raise ValueError(f"copybooks.yaml: {event!r} must be a mapping")
-        for required in ("copy", "perform"):
-            if required not in cfg:
-                raise ValueError(f"copybooks.yaml: {event!r} missing {required!r}")
-        sections = tuple(cfg.get("sections") or _DEFAULT_SECTIONS)
-        bad = [s for s in sections if s not in _ALLOWED_SECTIONS]
-        if bad:
+        if "perform" not in cfg:
+            raise ValueError(f"copybooks.yaml: {event!r} missing 'perform'")
+        copy_ws        = _opt_str(cfg, "copy_ws")
+        copy_procedure = _opt_str(cfg, "copy_procedure")
+        if not copy_ws and not copy_procedure:
             raise ValueError(
-                f"copybooks.yaml: {event!r} has unknown sections {bad}; "
-                f"allowed: {list(_ALLOWED_SECTIONS)}"
+                f"copybooks.yaml: {event!r} needs at least one of "
+                f"'copy_ws' or 'copy_procedure'"
             )
         hooks[event] = CopybookHook(
-            copy=str(cfg["copy"]).strip(),
+            copy_ws=copy_ws,
+            copy_procedure=copy_procedure,
             perform=str(cfg["perform"]).strip(),
-            sections=sections,
             when=cfg.get("when", _DEFAULT_WHEN.get(event)),
         )
     return hooks

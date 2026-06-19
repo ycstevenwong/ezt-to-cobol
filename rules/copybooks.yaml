@@ -1,49 +1,53 @@
 # Copybook hooks.  Each entry maps an EVENT the generator detects (file
-# open, VSAM invalid key, SQL error, etc.) to the copybook that should
-# handle it.  The generator emits `PERFORM <perform>` inside the guard;
-# the assembler emits `COPY <copy>.` once per (copybook, section) pair.
+# open, VSAM invalid key, SQL error, etc.) to the copybook(s) that should
+# handle it.  Two copybook slots, independent:
 #
-# Fields:
-#   copy      Copybook name.
-#   perform   Paragraph (inside the copybook) the generator PERFORMs
-#             when the event's guard fires.
-#   sections  Divisions that need a `COPY <copy>.` line.  Allowed values:
-#               working-storage   -> COPY in WORKING-STORAGE SECTION
-#               procedure         -> COPY in PROCEDURE DIVISION
-#             Defaults to [procedure] when omitted.
-#   when      (optional) IF-clause template spliced into the guard.
-#             Tokens replaced by the generator:
-#               {file}   -> the FD name (for file_* events)
-#             If omitted, the generator uses a built-in default for
-#             well-known events and no guard for the rest.
+#   copy_ws         Copybook to COPY into WORKING-STORAGE SECTION.
+#                   Use for shops whose error/util copybook declares WS
+#                   items (constants, status codes, message buffers).
+#                   Omit if the event needs no WS-side copybook.
 #
-# Missing event = generator falls back to its inline DISPLAY/STOP RUN
-# (i.e. today's behaviour).  Delete an entry to opt out of the copybook.
+#   copy_procedure  Copybook to COPY into PROCEDURE DIVISION.  Use for
+#                   shops whose copybook defines the paragraph that
+#                   `perform` names.  Omit if the event needs no
+#                   PROCEDURE-side copybook.
+#
+#   perform         Paragraph (defined inside copy_procedure) that the
+#                   generator PERFORMs when the event's guard fires.
+#
+#   when            (optional) IF-clause template spliced into the guard.
+#                   Tokens replaced by the generator:
+#                     {file}   -> the FD name (for file_* events)
+#                   If omitted, the generator uses a built-in default for
+#                   well-known events and no guard for the rest.
+#
+# At least one of copy_ws / copy_procedure must be set.  Same-name-both-
+# divisions is fine — just set both fields to the same value.
+# Missing event = generator falls back to its inline DISPLAY / STOP RUN.
 
 file_open_failure:
-  copy:     ERRHAND
-  perform:  FILE-ERROR-RTN
-  sections: [working-storage, procedure]
-  when:     "WS-{file}-STATUS NOT = '00'"
+  copy_ws:        ERRDATA
+  copy_procedure: ERRRTN
+  perform:        FILE-ERROR-RTN
+  when:           "WS-{file}-STATUS NOT = '00'"
 
 file_close_failure:
-  copy:     ERRHAND
-  perform:  FILE-ERROR-RTN
-  sections: [working-storage, procedure]
-  when:     "WS-{file}-STATUS NOT = '00'"
+  copy_ws:        ERRDATA
+  copy_procedure: ERRRTN
+  perform:        FILE-ERROR-RTN
+  when:           "WS-{file}-STATUS NOT = '00'"
 
 vsam_invalid_key:
-  copy:     VSAMERR
-  perform:  VSAM-ERROR-RTN
-  sections: [working-storage, procedure]
+  copy_ws:        VSAMDATA
+  copy_procedure: VSAMRTN
+  perform:        VSAM-ERROR-RTN
 
 sql_error:
-  copy:     SQLCHECK
-  perform:  CHECK-SQL-RTN
-  sections: [working-storage, procedure]
-  when:     "SQLCODE NOT = 0"
+  copy_ws:        SQLDATA
+  copy_procedure: SQLRTN
+  perform:        CHECK-SQL-RTN
+  when:           "SQLCODE NOT = 0"
 
 abend:
-  copy:     ABENDRTN
-  perform:  ABEND-RTN
-  sections: [working-storage, procedure]
+  copy_procedure: ABENDRTN
+  perform:        ABEND-RTN

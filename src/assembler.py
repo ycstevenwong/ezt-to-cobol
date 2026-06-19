@@ -343,10 +343,10 @@ def _resolve_copy_lines(
         hook = hooks.get(event)
         if hook is None:
             continue
-        if "working-storage" in hook.sections:
-            ws_set.add(hook.copy)
-        if "procedure" in hook.sections:
-            proc_set.add(hook.copy)
+        if hook.copy_ws:
+            ws_set.add(hook.copy_ws)
+        if hook.copy_procedure:
+            proc_set.add(hook.copy_procedure)
     return sorted(ws_set), sorted(proc_set)
 
 
