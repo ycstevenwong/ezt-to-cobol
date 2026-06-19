@@ -1,4 +1,7 @@
 """Load EZT->COBOL mapping rules from YAML and format them for prompt injection."""
+from __future__ import annotations
+
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -9,6 +12,51 @@ _RULES_DIR = Path(__file__).parent.parent / "rules"
 def _load(filename: str) -> dict:
     with (_RULES_DIR / filename).open(encoding="utf-8") as fh:
         return yaml.safe_load(fh)
+
+
+@dataclass(frozen=True)
+class CopybookHook:
+    copy: str
+    perform: str
+    sections: tuple[str, ...]
+    when: str | None
+
+
+_ALLOWED_SECTIONS = ("working-storage", "procedure")
+_DEFAULT_SECTIONS: tuple[str, ...] = ("procedure",)
+_DEFAULT_WHEN: dict[str, str] = {
+    "file_open_failure":  "WS-{file}-STATUS NOT = '00'",
+    "file_close_failure": "WS-{file}-STATUS NOT = '00'",
+}
+
+
+def load_copybooks() -> dict[str, CopybookHook]:
+    """Return {event_name: CopybookHook}.  Empty dict if copybooks.yaml is absent."""
+    path = _RULES_DIR / "copybooks.yaml"
+    if not path.exists():
+        return {}
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    hooks: dict[str, CopybookHook] = {}
+    for event, cfg in raw.items():
+        if not isinstance(cfg, dict):
+            raise ValueError(f"copybooks.yaml: {event!r} must be a mapping")
+        for required in ("copy", "perform"):
+            if required not in cfg:
+                raise ValueError(f"copybooks.yaml: {event!r} missing {required!r}")
+        sections = tuple(cfg.get("sections") or _DEFAULT_SECTIONS)
+        bad = [s for s in sections if s not in _ALLOWED_SECTIONS]
+        if bad:
+            raise ValueError(
+                f"copybooks.yaml: {event!r} has unknown sections {bad}; "
+                f"allowed: {list(_ALLOWED_SECTIONS)}"
+            )
+        hooks[event] = CopybookHook(
+            copy=str(cfg["copy"]).strip(),
+            perform=str(cfg["perform"]).strip(),
+            sections=sections,
+            when=cfg.get("when", _DEFAULT_WHEN.get(event)),
+        )
+    return hooks
 
 
 def general_rules_text() -> str:

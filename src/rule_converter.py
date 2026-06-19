@@ -3,6 +3,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from src.rules import CopybookHook
 from src.structured_parser import EZTDefine, EZTField, EZTFile, Preamble, parse_preamble
 
 # COBOL area indentation
@@ -1149,3 +1150,121 @@ def convert_field_def(field_def_content: str) -> str:
     """
     preamble = parse_preamble(field_def_content, already_joined=True)
     return gen_working_storage(preamble.defines)
+
+
+# ── OPEN-FILES / CLOSE-FILES generation ──────────────────────────────────────
+#
+# EZTFile carries no open mode; the JOB header is the source of truth:
+#
+#     JOB INPUT CUSTFILE OUTPUT RPTFILE
+#     JOB INPUT NULL
+#     JOB INPUT FILEA IO FILEB
+#
+# parse_job_file_modes walks one JOB-header line, switching the active mode
+# on each INPUT / OUTPUT / IO keyword and tagging every following file name
+# until the next mode keyword (or NAME 'jobname', which ends the file list).
+
+_JOB_HEADER_RE = re.compile(r"^\s*JOB\b\s*(.*)$", re.IGNORECASE)
+_MODE_KEYWORDS = {"INPUT": "INPUT", "OUTPUT": "OUTPUT", "IO": "I-O", "I-O": "I-O"}
+
+
+def parse_job_file_modes(job_section_content: str) -> Dict[str, str]:
+    """Return {FILE_NAME (upper): mode} extracted from the JOB header line.
+
+    Files not listed on JOB are absent from the dict; callers fall back to
+    a per-file heuristic.  An explicit 'INPUT NULL' contributes nothing.
+    """
+    modes: Dict[str, str] = {}
+    for line in job_section_content.splitlines():
+        m = _JOB_HEADER_RE.match(line)
+        if not m:
+            continue
+        tokens = m.group(1).upper().split()
+        current_mode: Optional[str] = None
+        for tok in tokens:
+            if tok in _MODE_KEYWORDS:
+                current_mode = _MODE_KEYWORDS[tok]
+            elif tok == "NULL":
+                current_mode = None
+            elif tok == "NAME":
+                break   # NAME 'JOBNAME' — anything after is not a file
+            elif current_mode is not None:
+                modes[tok] = current_mode
+        break   # only the first JOB header matters
+    return modes
+
+
+def _default_mode(f: EZTFile) -> str:
+    """Heuristic for files not listed on the JOB header.
+
+    VSAM files default to I-O (typical mainframe pattern); everything else
+    defaults to INPUT.  The JOB-header parser is the authoritative source
+    when available — this only fires when nothing was declared.
+    """
+    return "I-O" if f.org.upper() == "VSAM" else "INPUT"
+
+
+def _resolved_mode(f: EZTFile, file_modes: Dict[str, str]) -> str:
+    return file_modes.get(f.name.upper(), _default_mode(f))
+
+
+def _fmt_guard(hook: Optional[CopybookHook], file_name: str) -> str:
+    template = (hook.when if hook and hook.when else "WS-{file}-STATUS NOT = '00'")
+    return template.format(file=file_name)
+
+
+def gen_open_close_paragraphs(
+    files: List[EZTFile],
+    file_modes: Dict[str, str],
+    hooks: Dict[str, CopybookHook],
+) -> str:
+    """Emit OPEN-FILES + CLOSE-FILES paragraphs (and their -EXITs).
+
+    Each file gets its own OPEN <mode> / status check, then either a
+    PERFORM into the configured copybook paragraph (file_open_failure /
+    file_close_failure hook) or an inline DISPLAY + STOP RUN fallback.
+    Returns "" when there are no files (mirrors the JOB INPUT NULL case
+    where the LLM was previously told to omit the paragraphs).
+    """
+    if not files:
+        return ""
+
+    open_hook  = hooks.get("file_open_failure")
+    close_hook = hooks.get("file_close_failure")
+
+    def open_block(f: EZTFile) -> List[str]:
+        mode = _resolved_mode(f, file_modes)
+        lines = [f"           OPEN {mode} {f.name}"]
+        lines.append(f"           IF {_fmt_guard(open_hook, f.name)}")
+        if open_hook:
+            lines.append(f"               PERFORM {open_hook.perform}")
+        else:
+            lines.append(
+                f"               DISPLAY 'ERROR OPENING {f.name} STATUS: ' "
+                f"WS-{f.name}-STATUS"
+            )
+            lines.append("               STOP RUN")
+        lines.append("           END-IF")
+        return lines
+
+    def close_block(f: EZTFile) -> List[str]:
+        lines = [f"           CLOSE {f.name}"]
+        if close_hook:
+            lines.append(f"           IF {_fmt_guard(close_hook, f.name)}")
+            lines.append(f"               PERFORM {close_hook.perform}")
+            lines.append("           END-IF")
+        return lines
+
+    open_lines: List[str] = ["       OPEN-FILES."]
+    for f in files:
+        open_lines.extend(open_block(f))
+    open_lines[-1] = open_lines[-1] + "."        # period on the last statement
+    open_lines += ["       OPEN-FILES-EXIT.", "           EXIT."]
+
+    close_lines: List[str] = ["       CLOSE-FILES."]
+    for f in files:
+        close_lines.extend(close_block(f))
+    close_lines[-1] = close_lines[-1] + "."
+    close_lines += ["       CLOSE-FILES-EXIT.", "           EXIT."]
+
+    return "\n".join(open_lines + [""] + close_lines)

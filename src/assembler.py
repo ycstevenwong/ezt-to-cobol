@@ -4,7 +4,19 @@ from typing import Dict, List, Tuple
 
 from src.parser import EZTSection, SectionType
 from src.rule_converter import gen_report_ws
+from src.rules import CopybookHook, load_copybooks
 from src.structured_parser import parse_preamble
+
+# Synthetic key the converter stashes Python-generated OPEN/CLOSE paragraphs
+# under.  Duplicated here (not imported from src.converter) to keep the
+# assembler free of import cycles — converter already imports assembler.
+_OPEN_CLOSE_KEY = "open_close:paragraphs"
+
+# Events Python deterministically generates code for today.  Used to decide
+# which copybooks should get a COPY line emitted into the final program;
+# events listed in copybooks.yaml whose code Python doesn't yet emit are
+# left dormant (the YAML stays declarative for the next phase).
+_PY_GENERATED_EVENTS = ("file_open_failure", "file_close_failure")
 
 _IDENT_DIV = """\
        IDENTIFICATION DIVISION.
@@ -276,6 +288,68 @@ def _strip_data_decls(cobol: str) -> str:
     return "\n".join(lines)
 
 
+# Paragraph names Python emits and the LLM is told NOT to redeclare.
+# When the LLM ignores that, _strip_paragraphs removes its definition
+# (header + body) so we don't end up with two `OPEN-FILES.` paragraphs —
+# which the COBOL compiler rejects.  PERFORM references stay untouched.
+_PY_OWNED_PARAS = (
+    "OPEN-FILES",
+    "OPEN-FILES-EXIT",
+    "CLOSE-FILES",
+    "CLOSE-FILES-EXIT",
+)
+
+
+def _strip_paragraphs(cobol: str, names: Tuple[str, ...]) -> str:
+    """Delete each named paragraph definition from procedure code.
+
+    Walks the source line-by-line: when an Area-A `<name>.` header for any
+    of `names` is encountered, drop lines until the next Area-A paragraph
+    header (or end of text).  Multiple definitions of the same name are
+    all removed.  Lines that merely *reference* the name (e.g.
+    `PERFORM OPEN-FILES`) are untouched — they don't match _PARA_DEF_RE.
+    """
+    targets = {n.upper() for n in names}
+    out: List[str] = []
+    skip = False
+    for line in cobol.splitlines():
+        m = _PARA_DEF_RE.match(line)
+        if m:
+            skip = m.group(1).upper() in targets
+            if skip:
+                continue
+        if not skip:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _resolve_copy_lines(
+    hooks: Dict[str, CopybookHook],
+    converted: Dict[str, str],
+) -> Tuple[List[str], List[str]]:
+    """Return (ws_copybooks, procedure_copybooks) — deduped, sorted lists.
+
+    Only hooks whose event has actually been wired into the Python
+    generators contribute; an event in copybooks.yaml with no generated
+    code stays dormant.  Today the only wired events are file_open_failure
+    and file_close_failure (active iff the converter produced OPEN-FILES).
+    """
+    active: set = set()
+    if converted.get(_OPEN_CLOSE_KEY):
+        active.update({"file_open_failure", "file_close_failure"})
+    ws_set: set = set()
+    proc_set: set = set()
+    for event in active:
+        hook = hooks.get(event)
+        if hook is None:
+            continue
+        if "working-storage" in hook.sections:
+            ws_set.add(hook.copy)
+        if "procedure" in hook.sections:
+            proc_set.add(hook.copy)
+    return sorted(ws_set), sorted(proc_set)
+
+
 def assemble(
     sections: List[EZTSection],
     converted: Dict[str, str],
@@ -339,6 +413,11 @@ def assemble(
         # JOB sections contribute nothing here — their procedure code
         # comes from the combined-logic LLM call below.
 
+    # Python-generated OPEN-FILES / CLOSE-FILES paragraphs (if any).  Held
+    # for splicing into procedure_parts AFTER the LLM's logic so MAIN-PROCESS
+    # (which PERFORMs them by name) appears first.
+    open_close_text = (converted.get(_OPEN_CLOSE_KEY) or "").strip("\n")
+
     # Single combined JOB+REPORT LLM result — extract WS additions and
     # the unified PROCEDURE DIVISION exactly once.
     combined = (converted.get("logic:combined") or "").strip("\n")
@@ -355,6 +434,11 @@ def assemble(
         )
         clean_proc = proc[proc_m.end():].strip("\n") if proc_m else proc.strip("\n")
         clean_proc = _strip_data_decls(clean_proc)
+        # Defensive: if Python already emitted OPEN-FILES / CLOSE-FILES,
+        # drop any duplicate the LLM produced despite the prompt telling
+        # it not to.  PERFORM references in MAIN-PROCESS stay intact.
+        if open_close_text:
+            clean_proc = _strip_paragraphs(clean_proc, _PY_OWNED_PARAS)
         # Rename any paragraph whose bare name collides with a COBOL
         # reserved word (INITIAL, TERMINATE, etc.) — both definitions
         # and PERFORM references are rewritten in lockstep.
@@ -366,6 +450,19 @@ def assemble(
         clean_proc = _ensure_period_before_paragraphs(clean_proc)
         if clean_proc:
             procedure_parts.append(clean_proc)
+
+    # Append the Python-generated OPEN-FILES / CLOSE-FILES after the LLM's
+    # logic.  Order doesn't matter for COBOL paragraph resolution, but
+    # placing them after MAIN-PROCESS keeps the program's narrative flow.
+    if open_close_text:
+        procedure_parts.append(open_close_text)
+
+    # Resolve which copybook COPY lines to emit per division.  Only events
+    # Python actually generated code for contribute to the dedup set; events
+    # configured in copybooks.yaml whose code Python doesn't yet emit are
+    # ignored here (the YAML stays declarative for later phases).
+    hooks = load_copybooks()
+    ws_copies, proc_copies = _resolve_copy_lines(hooks, converted)
 
     # Build each division
     # COBOL PROGRAM-ID: letters, digits, hyphens only — strip anything else
@@ -391,12 +488,23 @@ def assemble(
         # a name declared by rule_converter isn't redeclared by the LLM's
         # WS block (COBOL rejects duplicate 01-level identifiers).
         data_sections.append(_dedupe_ws_items("\n".join(ws_parts)))
-    else:
+    elif not ws_copies:
         data_sections.append("       01 FILLER PIC X.")
+    if ws_copies:
+        # COPY lines for copybooks that contribute WS items (variables,
+        # 01-level declarations, etc.).  Placed AFTER the in-program WS so
+        # any name the copybook re-declares wins by being last.
+        data_sections.append(
+            "\n".join(f"       COPY {name}." for name in ws_copies)
+        )
     data_div = "\n".join(data_sections)
 
     # PROCEDURE DIVISION
     proc_body = "\n\n".join(procedure_parts) if procedure_parts else "           STOP RUN."
+    if proc_copies:
+        # Paragraph-only copybook(s) at the bottom of PROCEDURE — they
+        # define routines (FILE-ERROR-RTN etc.) the body just PERFORMs.
+        proc_body += "\n\n" + "\n".join(f"       COPY {name}." for name in proc_copies)
     procedure_div = "       PROCEDURE DIVISION.\n" + proc_body
 
     cobol = "\n\n".join([ident, env_div, data_div, procedure_div]) + "\n"

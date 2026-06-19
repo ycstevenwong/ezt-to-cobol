@@ -6,7 +6,15 @@ import re
 from src.assembler import split_ws_proc
 from src.parser import EZTSection, SectionType
 from src.prompts import SYSTEM_PROMPT, LOGIC_PROMPT
-from src.rule_converter import convert_file_def, convert_field_def, gen_report_ws
+from src.rule_converter import (
+    convert_file_def,
+    convert_field_def,
+    gen_open_close_paragraphs,
+    gen_report_ws,
+    parse_job_file_modes,
+    _inject_vsam_key,
+)
+from src.rules import load_copybooks
 from src.structured_parser import parse_preamble
 
 DEFAULT_MODEL    = "llama3.2"
@@ -21,6 +29,11 @@ _RULE_BASED = {SectionType.FILE_DEF, SectionType.FIELD_DEF}
 # converted-output dict.  The assembler looks for this key after iterating
 # the rule-based sections.
 COMBINED_LOGIC_KEY = "logic:combined"
+
+# Synthetic key for the Python-generated OPEN-FILES / CLOSE-FILES paragraphs.
+# The assembler appends this text to procedure_parts and skips the LLM's
+# version (the prompt tells the LLM these are pre-generated).
+OPEN_CLOSE_KEY = "open_close:paragraphs"
 
 
 def _report_ws_key(report_name: str) -> str:
@@ -195,6 +208,31 @@ def convert_all(
     #    in the context the LLM sees, and so the LLM's procedure code can
     #    reference them without inventing its own.
     preamble = parse_preamble(source) if source else None
+
+    # 2a. OPEN-FILES / CLOSE-FILES paragraphs — Python-generated so each
+    #     file gets a consistent status-check that PERFORMs the configured
+    #     copybook paragraph (rules/copybooks.yaml).  Stashed under
+    #     OPEN_CLOSE_KEY for the assembler; the LLM is instructed (via the
+    #     prompt) NOT to emit these paragraphs itself.
+    hooks = load_copybooks()
+    if preamble and preamble.files:
+        files = [_inject_vsam_key(f) for f in preamble.files]
+        job_section = next(
+            (s for s in sections if s.type == SectionType.JOB), None,
+        )
+        file_modes = (
+            parse_job_file_modes(job_section.content) if job_section else {}
+        )
+        open_close = gen_open_close_paragraphs(files, file_modes, hooks)
+        if open_close:
+            if verbose:
+                print("  → [open-close] (rule-based)", flush=True)
+            results[OPEN_CLOSE_KEY] = open_close
+            context_chunks.append(
+                "=== OPEN-FILES / CLOSE-FILES — ALREADY GENERATED, "
+                "DO NOT REDECLARE ===\n" + open_close
+            )
+
     for section in sections:
         if section.type != SectionType.REPORT:
             continue
