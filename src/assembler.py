@@ -1,6 +1,7 @@
 """Assemble per-section COBOL output into a complete, compilable program."""
 import re
-from typing import Dict, List, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 from src.parser import EZTSection, SectionType
 from src.rule_converter import gen_report_ws
@@ -323,6 +324,361 @@ def _strip_paragraphs(cobol: str, names: Tuple[str, ...]) -> str:
     return "\n".join(out)
 
 
+# ── Auto-declaration of missing variables ────────────────────────────────────
+#
+# Even with the identifier allow-list in the prompt, the LLM sometimes
+# references a variable it never declared, and the COBOL compile fails on
+# an undefined data name.  Instead of letting that happen, scan the final
+# procedure text for identifiers that are neither declared in the DATA
+# DIVISION nor paragraph names / reserved words, infer a PIC from how each
+# one is USED, and emit the declarations as an extra WS block flagged for
+# human review.
+#
+# PIC inference, in priority order per identifier:
+#   1. ACCEPT x FROM DATE/TIME/DAY        → fixed PIC (9(8) / 9(6) / 9(5))
+#   2. used inside a subscript (T(x))     → index: S9(4) COMP VALUE 1
+#   3. arithmetic target (ADD/COMPUTE/…)  → numeric; widened from a declared
+#      numeric partner's digits when one appears in the same statement,
+#      else S9(9)V9(2) COMP-3
+#   4. MOVE/compare partner with a declared field → copy the partner's PIC
+#   5. MOVE/compare with a quoted literal → PIC X(longest literal)
+#   6. MOVE/compare with a numeric literal → PIC 9(digits)[V9(dec)]
+#   7. no evidence at all                 → PIC X(20) (flagged in a comment)
+#
+# Oversizing is safe (COBOL pads); undersizing truncates silently, so the
+# numeric defaults lean generous.  Subscripted references are NOT declared
+# (the OCCURS size is unknowable) — a review comment is emitted instead.
+
+# Words that may appear in operand position but are never user data names.
+_RESERVED_WORDS = frozenset("""
+    ACCEPT ADD ADVANCING AFTER ALL ALSO AND ARE AT BEFORE BY CALL CLOSE
+    COMP COMP-3 COMPUTE CONTENT CONTINUE CONVERTING CORR CORRESPONDING
+    COUNT DATE DAY DAY-OF-WEEK DELETE DELIMITED DELIMITER DEPENDING
+    DISPLAY DIVIDE DOWN DUPLICATES ELSE END EQUAL ERROR EVALUATE
+    EXCEPTION EXIT EXTEND FALSE FIRST FROM FUNCTION GIVING GO GOBACK
+    GREATER HIGH-VALUE HIGH-VALUES I-O IF IN INITIAL INITIALIZE INPUT
+    INSPECT INTO INVALID IS JUST JUSTIFIED KEY LEADING LESS LINE LINES
+    LOCK LOW-VALUE LOW-VALUES MERGE MOVE MULTIPLY NEGATIVE NEXT NO NOT
+    NUMERIC ALPHABETIC ALPHANUMERIC OF ON OPEN OR OTHER OUTPUT OVERFLOW
+    PAGE PERFORM POINTER POSITIVE QUOTE QUOTES READ RECORD REFERENCE
+    RELEASE REMAINDER REPLACING RETURN RETURN-CODE REVERSED REWIND
+    REWRITE ROUNDED RUN SEARCH SENTENCE SET SIZE SORT SPACE SPACES START
+    STOP STRING SUBTRACT TALLYING TEST THAN THEN THRU THROUGH TIME TIMES
+    TO TRUE UNSTRING UNTIL UP UPON USING VALUE VARYING WHEN WITH WRITE
+    ZERO ZEROES ZEROS YYYYMMDD YYYYDDD
+""".split())
+
+_IDENT_TOKEN_RE   = re.compile(r"[A-Z][A-Z0-9-]*")
+_QUOTED_RE        = re.compile(r"'[^']*'|\"[^\"]*\"")
+_NUM_LITERAL_RE   = re.compile(r"^[+-]?\d+(\.\d+)?$")
+
+# Declared-name harvesting from the assembled DATA DIVISION text.
+_DECL_NAME_RE  = re.compile(r"^\s*\d{2}\s+([A-Z][A-Z0-9-]*)", re.IGNORECASE)
+_FD_SELECT_RE  = re.compile(r"^\s*(?:FD|SELECT)\s+([A-Z][A-Z0-9-]*)",
+                            re.IGNORECASE)
+_PIC_CLAUSE_RE = re.compile(r"\bPIC(?:TURE)?\s+(?:IS\s+)?(\S+)", re.IGNORECASE)
+
+# Paragraph references — PERFORM x [THRU y], GO TO x.  These identifiers
+# are code labels, never data items; they must not be auto-declared.
+_PERFORM_REF_RE = re.compile(
+    r"\b(?:PERFORM|THRU|THROUGH)\s+([A-Z][A-Z0-9-]*)", re.IGNORECASE)
+_GO_TO_REF_RE   = re.compile(r"\bGO\s+TO\s+([A-Z][A-Z0-9-]*)", re.IGNORECASE)
+
+_ACCEPT_FROM_RE = re.compile(
+    r"\bACCEPT\s+([A-Z][A-Z0-9-]*)\s+FROM\s+(DATE\s+YYYYMMDD|DATE|TIME|DAY)\b",
+    re.IGNORECASE)
+_ACCEPT_PICS = {"DATE YYYYMMDD": "9(8)", "DATE": "9(6)",
+                "TIME": "9(8)", "DAY": "9(5)"}
+
+_MOVE_STMT_RE = re.compile(r"\bMOVE\s+(\S+)\s+TO\s+(.+?)(?:\.\s*$|$)",
+                           re.IGNORECASE)
+_COMPARE_RE = re.compile(
+    r"(\S+)\s*(?:IS\s+)?(?:NOT\s+)?(?:=|>=|<=|>|<)\s*(\S+)", re.IGNORECASE)
+
+_ARITH_VERBS_RE = re.compile(
+    r"\b(?:ADD|SUBTRACT|MULTIPLY|DIVIDE|COMPUTE)\b", re.IGNORECASE)
+
+_EDITED_PIC_CHARS = set("Z*,.$+-B/")
+
+
+@dataclass
+class _VarEvidence:
+    """Accumulated usage evidence for one undeclared identifier."""
+    arith:       bool = False
+    alpha_len:   int = 0
+    num_int:     int = 0
+    num_dec:     int = 0
+    partners:    List[str] = field(default_factory=list)
+    special_pic: Optional[str] = None
+    subscripted: bool = False
+    index:       bool = False   # appears INSIDE a subscript → numeric index
+
+
+def _blank_literals(line: str) -> str:
+    """Replace quoted literals with spaces so their content isn't scanned."""
+    return _QUOTED_RE.sub(lambda m: " " * len(m.group(0)), line)
+
+
+def _is_numeric_pic(pic: str) -> bool:
+    body = pic.upper().replace("(", "").replace(")", "")
+    return "9" in body and all(c in "S9V0123456789" for c in body)
+
+
+def _pic_digit_counts(pic: str) -> Tuple[int, int]:
+    """Return (integer_digits, decimal_digits) for a numeric PIC string."""
+    int_part, _, dec_part = pic.upper().partition("V")
+
+    def count(part: str) -> int:
+        total = 0
+        for m in re.finditer(r"9(?:\((\d+)\))?", part):
+            total += int(m.group(1)) if m.group(1) else 1
+        return total
+
+    return count(int_part), count(dec_part)
+
+
+def _collect_declared(data_text: str) -> Tuple[set, Dict[str, str]]:
+    """Scan assembled DATA DIVISION text for declared names and their PICs.
+
+    Returns (declared_names, {name: pic_string}).  File names from FD /
+    SELECT lines count as declared (they appear in OPEN / READ / CLOSE).
+    """
+    declared: set = set()
+    pics: Dict[str, str] = {}
+    for line in data_text.splitlines():
+        m = _DECL_NAME_RE.match(line) or _FD_SELECT_RE.match(line)
+        if not m:
+            continue
+        name = m.group(1).upper()
+        declared.add(name)
+        pm = _PIC_CLAUSE_RE.search(line)
+        if pm and name not in pics:
+            pic = pm.group(1).upper()
+            if pic.endswith("."):
+                pic = pic[:-1]          # statement period, not part of the PIC
+            if re.search(r"\bCOMP-3\b", line, re.IGNORECASE):
+                pic += " COMP-3"
+            elif re.search(r"\bCOMP\b", line, re.IGNORECASE):
+                pic += " COMP"
+            pics[name] = pic
+    declared.add("RETURN-CODE")         # special register, always available
+    return declared, pics
+
+
+def _collect_paragraph_names(proc_text: str) -> set:
+    """All code labels: paragraph definitions plus PERFORM/THRU/GO TO refs."""
+    names: set = set()
+    for m in _PARA_DEF_RE.finditer(proc_text):
+        names.add(m.group(1).upper())
+    for m in _PERFORM_REF_RE.finditer(proc_text):
+        names.add(m.group(1).upper())
+    for m in _GO_TO_REF_RE.finditer(proc_text):
+        names.add(m.group(1).upper())
+    return names
+
+
+def _is_candidate(tok: str, declared: set, paragraphs: set) -> bool:
+    return (tok not in _RESERVED_WORDS
+            and not tok.startswith("END-")
+            and tok not in declared
+            and tok not in paragraphs)
+
+
+def _operand_evidence(ev: _VarEvidence, operand: str, declared: set,
+                      pics: Dict[str, str]) -> None:
+    """Fold one partner operand (literal / figurative / field) into evidence."""
+    op = operand.rstrip(".").rstrip(",")
+    if op.startswith(("'", '"')):
+        ev.alpha_len = max(ev.alpha_len, max(len(op) - 2, 1))
+    elif _NUM_LITERAL_RE.match(op):
+        digits = op.lstrip("+-")
+        int_p, _, dec_p = digits.partition(".")
+        ev.num_int = max(ev.num_int, len(int_p))
+        ev.num_dec = max(ev.num_dec, len(dec_p))
+    elif op in ("SPACE", "SPACES"):
+        ev.alpha_len = max(ev.alpha_len, 1)
+    elif op in ("ZERO", "ZEROS", "ZEROES"):
+        ev.num_int = max(ev.num_int, 1)
+    elif op.upper() in declared and op.upper() in pics:
+        ev.partners.append(op.upper())
+
+
+def _gather_evidence(proc_text: str, declared: set,
+                     paragraphs: set, pics: Dict[str, str],
+                     ) -> Dict[str, _VarEvidence]:
+    """One pass over procedure text collecting usage evidence per unknown."""
+    evidence: Dict[str, _VarEvidence] = {}
+
+    def ev(name: str) -> _VarEvidence:
+        return evidence.setdefault(name, _VarEvidence())
+
+    for raw in proc_text.splitlines():
+        stripped = raw.lstrip()
+        if not stripped or stripped.startswith("*") \
+                or (len(raw) > 6 and raw[6] == "*"):
+            continue
+        line = raw.upper()
+        blanked = _blank_literals(line)
+
+        # Candidate identifiers on this line (literals blanked out).
+        # Track subscripted references — they can't be safely declared.
+        prev_tok = ""
+        line_candidates: List[str] = []
+        for m in _IDENT_TOKEN_RE.finditer(blanked):
+            tok = m.group(0)
+            if prev_tok == "FUNCTION":       # intrinsic name, not a data item
+                prev_tok = tok
+                continue
+            prev_tok = tok
+            if not _is_candidate(tok, declared, paragraphs):
+                continue
+            rest = blanked[m.end():].lstrip()
+            if rest.startswith("("):
+                ev(tok).subscripted = True
+                # Identifiers inside the subscript are index variables —
+                # they must be numeric regardless of other evidence.
+                inner = rest[1:rest.index(")")] if ")" in rest else rest[1:]
+                for idx_tok in _IDENT_TOKEN_RE.findall(inner):
+                    if _is_candidate(idx_tok, declared, paragraphs):
+                        ev(idx_tok).index = True
+                continue
+            line_candidates.append(tok)
+            ev(tok)                          # register even without evidence
+
+        if not line_candidates and not evidence:
+            continue
+
+        # ACCEPT x FROM DATE/TIME/DAY → exact PIC known.
+        am = _ACCEPT_FROM_RE.search(line)
+        if am:
+            name = am.group(1).upper()
+            if name in evidence:
+                key = " ".join(am.group(2).upper().split())
+                evidence[name].special_pic = _ACCEPT_PICS.get(key)
+
+        # MOVE <src> TO <targets...>
+        mm = _MOVE_STMT_RE.search(line)
+        if mm:
+            src = mm.group(1).upper()
+            # Re-read the source token from the ORIGINAL line so quoted
+            # literal content survives (blanked copy loses it).
+            src_orig = _MOVE_STMT_RE.search(raw.upper()).group(1)
+            targets = [t for t in _IDENT_TOKEN_RE.findall(
+                       _blank_literals(mm.group(2).upper()))]
+            for tgt in targets:
+                if tgt in line_candidates:
+                    _operand_evidence(ev(tgt), src_orig, declared, pics)
+            if src in line_candidates:
+                for tgt in targets:
+                    if tgt in declared and tgt in pics:
+                        ev(src).partners.append(tgt)
+
+        # Arithmetic statements: every candidate on the line is numeric;
+        # declared numeric fields on the line become sizing partners.
+        if _ARITH_VERBS_RE.search(blanked):
+            declared_partners = [
+                t for t in _IDENT_TOKEN_RE.findall(blanked)
+                if t in declared and t in pics and _is_numeric_pic(
+                    pics[t].replace(" COMP-3", "").replace(" COMP", ""))
+            ]
+            for cand in line_candidates:
+                e = ev(cand)
+                e.arith = True
+                e.partners.extend(declared_partners)
+                for lit in re.findall(r"\b\d+(?:\.\d+)?\b", blanked):
+                    _operand_evidence(e, lit, declared, pics)
+
+        # Comparisons (IF / WHEN / PERFORM UNTIL ...): pair each side.
+        for cm in _COMPARE_RE.finditer(raw.upper()):
+            left, right = cm.group(1).upper(), cm.group(2)
+            l_name = left.rstrip(".,)")
+            r_name = right.upper().rstrip(".,)")
+            if l_name in line_candidates:
+                _operand_evidence(ev(l_name), right, declared, pics)
+            if r_name in line_candidates:
+                _operand_evidence(ev(r_name), left, declared, pics)
+
+    return evidence
+
+
+def _decide_pic(e: _VarEvidence, pics: Dict[str, str]) -> Tuple[str, str]:
+    """Return (pic_clause, value_clause) for one undeclared identifier."""
+    if e.special_pic:
+        return f"PIC {e.special_pic}", "VALUE ZERO"
+
+    if e.index:
+        # Subscript index — binary halfword, started at 1 so an immediate
+        # use before any SET/MOVE stays within table bounds.
+        return "PIC S9(4) COMP", "VALUE 1"
+
+    partner_pics = [pics[p] for p in e.partners if p in pics]
+
+    if e.arith:
+        for ppic in partner_pics:
+            bare = ppic.replace(" COMP-3", "").replace(" COMP", "")
+            if _is_numeric_pic(bare):
+                ints, decs = _pic_digit_counts(bare)
+                ints = min(ints + 2, 18 - decs)   # headroom for totals
+                dec_part = f"V9({decs})" if decs else ""
+                return f"PIC S9({ints}){dec_part} COMP-3", "VALUE ZERO"
+        if e.num_int:
+            dec_part = f"V9({e.num_dec})" if e.num_dec else ""
+            return (f"PIC S9({max(e.num_int + 2, 4)}){dec_part} COMP-3",
+                    "VALUE ZERO")
+        return "PIC S9(9)V9(2) COMP-3", "VALUE ZERO"
+
+    if partner_pics:
+        ppic = partner_pics[0]
+        bare = ppic.replace(" COMP-3", "").replace(" COMP", "")
+        if _is_numeric_pic(bare):
+            return f"PIC {ppic}", "VALUE ZERO"
+        if any(c in _EDITED_PIC_CHARS for c in bare):
+            return f"PIC {bare}", ""          # edited PIC — no VALUE allowed
+        return f"PIC {bare}", "VALUE SPACES"
+
+    if e.alpha_len:
+        return f"PIC X({e.alpha_len})", "VALUE SPACES"
+    if e.num_int:
+        dec_part = f"V9({e.num_dec})" if e.num_dec else ""
+        return f"PIC 9({e.num_int}){dec_part}", "VALUE ZERO"
+
+    return "PIC X(20)", "VALUE SPACES"        # no usable evidence
+
+
+def gen_missing_var_ws(proc_text: str, data_text: str) -> str:
+    """Emit WS declarations for identifiers the procedure code references
+    but the DATA DIVISION never declares.  Returns "" when nothing is missing.
+    """
+    if not proc_text.strip():
+        return ""
+    declared, pics = _collect_declared(data_text)
+    paragraphs = _collect_paragraph_names(proc_text)
+    evidence = _gather_evidence(proc_text, declared, paragraphs, pics)
+    if not evidence:
+        return ""
+
+    lines: List[str] = [
+        "      * AUTO-DECLARED: the following identifiers are referenced by",
+        "      * the generated logic but were missing from the DATA DIVISION.",
+        "      * PICs are inferred from usage -- review before compiling.",
+    ]
+    emitted = False
+    for name in sorted(evidence):
+        e = evidence[name]
+        if e.subscripted:
+            lines.append(f"      * {name} is referenced with a subscript --")
+            lines.append("      * OCCURS size unknown; declare it manually.")
+            continue
+        pic, value = _decide_pic(e, pics)
+        suffix = f"{pic} {value}".strip()
+        lines.append(f"       01  {name:<33} {suffix}.")
+        emitted = True
+
+    if not emitted and len(lines) <= 3:
+        return ""
+    return "\n".join(lines)
+
+
 def _resolve_copy_lines(
     hooks: Dict[str, CopybookHook],
     converted: Dict[str, str],
@@ -472,6 +828,22 @@ def assemble(
         abend_ws_items = load_abend_ws()
         if abend_ws_items:
             ws_parts.append("\n".join(abend_ws_items))
+
+    # Auto-declare any identifier the procedure code references but the
+    # DATA DIVISION never declares (PIC inferred from usage).  Runs on the
+    # FINAL procedure text — after reserved-word renames and paragraph
+    # stripping — so the names scanned are the names that will compile.
+    # NOTE: names declared inside COPY members (ERRDATA etc.) are invisible
+    # here; _dedupe_ws_items can't help either, so if a copybook already
+    # declares one of these the copybook version wins by being COPY'd last.
+    proc_text_all = "\n\n".join(procedure_parts)
+    if proc_text_all.strip():
+        data_text_all = "\n".join(
+            file_control_parts + file_section_parts + ws_parts
+        )
+        missing_ws = gen_missing_var_ws(proc_text_all, data_text_all)
+        if missing_ws:
+            ws_parts.append(missing_ws)
 
     # Build each division
     # COBOL PROGRAM-ID: letters, digits, hyphens only — strip anything else
