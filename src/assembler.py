@@ -187,6 +187,147 @@ def _dedupe_ws_items(ws_text: str) -> str:
     return "\n".join(out)
 
 
+# ── Statement-period normalization ──────────────────────────────────────────
+#
+# COBOL standard style: every complete statement at the top level of a
+# paragraph ends with a period (one sentence per statement).  But a period
+# is FORBIDDEN in these positions — it would end the whole sentence early
+# and orphan the remaining scope words (compile error or broken logic):
+#
+#   • inside an IF / ELSE body (before ELSE or END-IF)
+#   • inside EVALUATE / WHEN branches (before END-EVALUATE)
+#   • inside an inline PERFORM UNTIL/VARYING/TIMES body (before END-PERFORM)
+#   • inside a verb's conditional phrase — READ ... AT END / NOT AT END,
+#     WRITE/START/DELETE ... INVALID KEY, arithmetic ON SIZE ERROR,
+#     CALL ... ON EXCEPTION / OVERFLOW — the period belongs after END-READ /
+#     END-WRITE / END-COMPUTE etc., never inside the phrase
+#   • mid-statement, when the statement continues on the next line
+#     (e.g.  MOVE X  /  TO Y)
+#
+# Strategy: walk the procedure text tracking (a) nesting depth of the
+# reliable delimited scopes (IF, EVALUATE, inline PERFORM — the prompt
+# mandates their END-x terminators) and (b) a "pending closer" flag for
+# verbs sitting in a conditional phrase.  A period is appended to a line
+# only when it sits at depth 0, no closer is pending, the line doesn't
+# start with a clause keyword or end with a connector token, and the NEXT
+# code line clearly starts a new sentence (a COBOL verb or a paragraph
+# header).  When in doubt, no period is added — the existing
+# _ensure_period_before_paragraphs backstop still guarantees the one
+# mandatory period per paragraph.
+
+_VERB_SENTENCE_STARTERS = frozenset("""
+    ACCEPT ADD CALL CLOSE COMPUTE CONTINUE DELETE DISPLAY DIVIDE
+    EVALUATE EXIT GO GOBACK IF INITIALIZE INSPECT MERGE MOVE MULTIPLY
+    OPEN PERFORM READ RELEASE RETURN REWRITE SEARCH SET SORT START STOP
+    STRING SUBTRACT UNSTRING WRITE
+""".split())
+
+# A line whose FIRST token is one of these is a clause fragment, never a
+# complete statement (ELSE, WHEN branches, AT END / INVALID KEY phrases...).
+_CLAUSE_FIRST_TOKENS = frozenset("""
+    ELSE WHEN AT NOT INVALID ON THEN OTHER
+""".split())
+
+# A line whose LAST token is one of these is mid-statement — the operand
+# list or clause continues on the following line.
+_CONTINUATION_LAST_TOKENS = frozenset("""
+    TO FROM INTO BY GIVING UNTIL VARYING THRU THROUGH AND OR OF IN IS
+    WITH AFTER BEFORE ADVANCING DELIMITED REPLACING CONVERTING TALLYING
+    USING REFERENCE CONTENT KEY UPON FUNCTION ALL = > < >= <= + - * /
+""".split())
+
+_COND_PHRASE_RE = re.compile(
+    r"\b(?:AT\s+END|INVALID\s+KEY|SIZE\s+ERROR|ON\s+OVERFLOW|"
+    r"ON\s+EXCEPTION|NO\s+DATA|END-OF-PAGE)\b")
+
+# END-x closers for the conditional-phrase verbs (not IF/EVALUATE/PERFORM,
+# which are depth-tracked separately).
+_PHRASE_CLOSER_RE = re.compile(
+    r"\bEND-(?:READ|WRITE|REWRITE|DELETE|START|RETURN|CALL|COMPUTE|ADD|"
+    r"SUBTRACT|MULTIPLY|DIVIDE|STRING|UNSTRING|SEARCH|ACCEPT|DISPLAY)\b")
+
+_INLINE_PERFORM_RE = re.compile(
+    r"\bPERFORM\s+(?:WITH\s+TEST\b|UNTIL\b|VARYING\b|\d+\s+TIMES\b)")
+
+_LINE_TOKEN_RE = re.compile(r"[A-Z][A-Z0-9-]*|\S")
+
+
+def _is_proc_comment(line: str) -> bool:
+    return (len(line) > 6 and line[6] == "*") or line.lstrip().startswith("*")
+
+
+def _first_code_token(line: str) -> str:
+    m = re.search(r"[A-Z][A-Z0-9-]*", _blank_literals(line.upper()))
+    return m.group(0) if m else ""
+
+
+def add_statement_periods(cobol: str) -> str:
+    """Append the standard end-of-statement period to complete top-level
+    statements, never inside IF/ELSE, EVALUATE, inline PERFORM, or a verb's
+    conditional phrase (AT END / INVALID KEY / ON SIZE ERROR / ...).
+    """
+    lines = cobol.splitlines()
+
+    # Index of the next code line (skipping blanks + comments) per line.
+    next_code: List[Optional[int]] = [None] * len(lines)
+    nxt: Optional[int] = None
+    for i in range(len(lines) - 1, -1, -1):
+        next_code[i] = nxt
+        if lines[i].strip() and not _is_proc_comment(lines[i]):
+            nxt = i
+
+    depth = 0
+    pending = False   # inside a conditional phrase awaiting its END-x
+    out: List[str] = []
+
+    for i, line in enumerate(lines):
+        if not line.strip() or _is_proc_comment(line):
+            out.append(line)
+            continue
+        if _PARA_DEF_RE.match(line):
+            depth, pending = 0, False   # paragraph boundary — hard resync
+            out.append(line)
+            continue
+
+        u = _blank_literals(line.upper())
+        toks = _LINE_TOKEN_RE.findall(u)
+
+        opens = sum(1 for t in toks if t in ("IF", "EVALUATE"))
+        opens += len(_INLINE_PERFORM_RE.findall(u))
+        closes = sum(1 for t in toks
+                     if t in ("END-IF", "END-EVALUATE", "END-PERFORM"))
+        depth = max(depth + opens - closes, 0)
+
+        if _PHRASE_CLOSER_RE.search(u):
+            pending = False
+        elif _COND_PHRASE_RE.search(u):
+            pending = True
+
+        stripped = line.rstrip()
+        add = (
+            not stripped.endswith(".")
+            and depth == 0
+            and not pending
+            and toks
+            and toks[0] not in _CLAUSE_FIRST_TOKENS
+            and toks[-1] not in _CONTINUATION_LAST_TOKENS
+            and not stripped.endswith(",")
+        )
+        if add:
+            ni = next_code[i]
+            if ni is None:
+                pass                       # last code line — period it
+            elif _PARA_DEF_RE.match(lines[ni]):
+                pass                       # next is a paragraph header
+            elif _first_code_token(lines[ni]) in _VERB_SENTENCE_STARTERS:
+                pass                       # next line starts a new sentence
+            else:
+                add = False                # continuation / clause — no period
+        out.append(stripped + "." if add else line)
+
+    return "\n".join(out)
+
+
 def _ensure_period_before_paragraphs(cobol: str) -> str:
     """Insert a missing period at the end of the statement that precedes
     each Area-A paragraph header.
@@ -801,6 +942,10 @@ def assemble(
         clean_proc = _rename_reserved_paragraphs(clean_proc)
         # COBOL has no IS INTEGER class test — rewrite to IS NUMERIC.
         clean_proc = _fix_integer_class_test(clean_proc)
+        # Standard statement periods: one per complete top-level statement,
+        # never inside IF/ELSE, EVALUATE, inline PERFORM, or a conditional
+        # phrase (AT END / INVALID KEY / ON SIZE ERROR / ...).
+        clean_proc = add_statement_periods(clean_proc)
         # Ensure each paragraph's last statement ends with a period so the
         # next paragraph header doesn't get parsed as part of it.
         clean_proc = _ensure_period_before_paragraphs(clean_proc)
