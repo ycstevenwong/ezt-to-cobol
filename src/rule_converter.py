@@ -13,6 +13,9 @@ _C = " " * 15  # col 16          — 10-level within a WS group
 
 _PIC_COL = 49  # target 0-indexed column for the PIC keyword (consistent across all depths)
 
+_MAX_NAME = 25  # generated COBOL identifier length cap (COBOL allows 30;
+                # capped tighter so shop-appended suffixes still fit in 30)
+
 
 def _field_line(prefix: str, name: str, pic: str) -> str:
     """Return a COBOL data-item line with PIC aligned to _PIC_COL."""
@@ -139,7 +142,7 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
         if gap > 0:
             lines.append(_field_line(prefix, "FILLER", f"PIC X({gap})"))
         f = node.field
-        fname = f.name[:30]
+        fname = f.name[:_MAX_NAME]
 
         same_start = _flatten_same_start_chain(node)
         if same_start is not None:
@@ -153,7 +156,7 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
             child_prefix = f"{child_indent}{child_lvl}  "
             for alt in same_start:
                 af = alt.field
-                alt_name = af.name[:30]
+                alt_name = af.name[:_MAX_NAME]
                 lines.append(f"{prefix}FILLER REDEFINES {fname}.")
                 lines.append(_field_line(child_prefix, alt_name,
                                          _pic(af.type, af.length, af.decimals)))
@@ -218,7 +221,7 @@ def _record_layout(file: EZTFile) -> List[str]:
         # Emit a single elementary record buffer at the effective length so
         # the FD is valid and the procedure code can WRITE / WRITE FROM it.
         rec_len = _effective_rec_length(file)
-        rec_name = (file.name + "-REC")[:30]
+        rec_name = (file.name + "-REC")[:_MAX_NAME]
         return [_field_line(f"{_A}01  ", rec_name, f"PIC X({rec_len})")]
 
     if len(roots) == 1 and roots[0].children and not roots[0].field.occurs:
@@ -263,7 +266,7 @@ def _record_layout(file: EZTFile) -> List[str]:
     rec_name = f"{file.name}-REC"
     if rec_name.upper() in field_names:
         rec_name = f"{file.name}-RECORD"
-    lines = [f"{_A}01  {rec_name[:30]}."]
+    lines = [f"{_A}01  {rec_name[:_MAX_NAME]}."]
     lines.extend(_render_subtree(roots, 1, 1, rec_end))
     return lines
 
@@ -289,7 +292,7 @@ def gen_file_control(files: List[EZTFile]) -> str:
             f"    ACCESS MODE IS {acc}",
         ]
         if f.org == "VSAM":
-            clauses.append(f"    RECORD KEY IS {(f.name + '-KEY')[:30]}")
+            clauses.append(f"    RECORD KEY IS {(f.name + '-KEY')[:_MAX_NAME]}")
         clauses.append(f"    FILE STATUS IS WS-{f.name}-STATUS.")
         blocks.append("\n".join(clauses))
     return "\n".join(blocks)
@@ -406,7 +409,7 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
             is_numeric = d.type.upper() in ("N", "P", "B", "U")
             needs_redefines = is_numeric and d.value is not None
             if needs_redefines:
-                full_name = (d.name + "-FULL")[:30]
+                full_name = (d.name + "-FULL")[:_MAX_NAME]
                 lines.append(f"{_A}01  {_safe_name(d.name)}.")
                 lines.append(_field_line(f"{_B}05  ", full_name, pic_str + val_clause))
                 lines.append(f"{_B}05  FILLER REDEFINES {full_name}.")
@@ -654,14 +657,11 @@ def _strip_ws_prefix(name: str) -> str:
     return name[3:] if upper.startswith("WS-") else name
 
 
-_MAX_NAME = 30   # COBOL identifier length limit
-
-
 def _safe_name(name: str) -> str:
-    """Trim a generated identifier to 30 chars and strip any trailing '-'.
+    """Trim a generated identifier to _MAX_NAME chars and strip any trailing '-'.
 
     COBOL identifiers cannot end with a hyphen — that's a compile error —
-    which can happen when the 30-char truncation lands exactly on one.
+    which can happen when the length truncation lands exactly on one.
     """
     name = name[:_MAX_NAME].rstrip("-")
     return name or "FILLER"   # never return empty; FILLER is a safe fallback
@@ -673,13 +673,13 @@ def _build_sub_name(sub_prefix: str, source_field: str,
 
     Format: ``<sub_prefix>-<source_stem>``, where source_stem is the field
     name without a leading 'WS-'.  If the combined name would exceed COBOL's
-    30-char identifier limit the stem is right-truncated; trailing hyphens
+    _MAX_NAME-char identifier limit the stem is right-truncated; trailing hyphens
     that fall on the cut point are stripped.
 
     When `used` is given, the returned name is guaranteed unique within
     that set — if truncation would collide with a name already in `used`
     (common when two long source names share a long prefix), a numeric
-    -N suffix is added (still within 30 chars).  The chosen name is
+    -N suffix is added (still within _MAX_NAME chars).  The chosen name is
     added to `used` on return.
     """
     stem = _strip_ws_prefix(source_field)
@@ -695,7 +695,7 @@ def _build_sub_name(sub_prefix: str, source_field: str,
             used.add(candidate)
         return candidate
 
-    # Collision — append -N, shrinking the base if necessary to fit 30 chars.
+    # Collision — append -N, shrinking the base if necessary to fit _MAX_NAME chars.
     for n in range(2, 1000):
         suffix = f"-{n}"
         max_base = _MAX_NAME - len(suffix)
@@ -714,7 +714,7 @@ def _resolve_subfield_names(
 
     Walks fragments in COL order so the dedup counter (-2, -3, ...) lands
     on the LATER occurrence when long names would otherwise collide after
-    30-char truncation.  Returns a dict keyed by the source field name.
+    _MAX_NAME-char truncation.  Returns a dict keyed by the source field name.
     """
     mapping: Dict[str, str] = {}
     used: set = set()
@@ -726,7 +726,7 @@ def _resolve_subfield_names(
 
 def _resolve_dtl_names(fields: List[str]) -> Dict[str, str]:
     """source-field -> unique WS-DTL-<...> target name, deduped across the
-    list so long names that truncate to the same 30 chars don't collide.
+    list so long names that truncate to the same _MAX_NAME chars don't collide.
     """
     mapping: Dict[str, str] = {}
     used: set = set()
@@ -765,7 +765,7 @@ def _gen_positioned_line_block(
 
     # Resolve subfield names ONCE so the comment block and the 05 lines
     # below use the same dedup'd identifiers when long source names would
-    # otherwise collide after 30-char truncation.
+    # otherwise collide after _MAX_NAME-char truncation.
     name_map = _resolve_subfield_names(sub_prefix, fragments)
 
     items: List[Tuple[str, str, str]] = []
@@ -968,7 +968,7 @@ def gen_report_ws(report_name: str, content: str,
             ctl_w = _display_width(ctl.type, ctl.length, ctl.decimals) if ctl else 10
             lines.append(_field_line(
                 f"{_A}01  ",
-                f"WS-{directives.control_field.upper()}-SAVE"[:30],
+                f"WS-{directives.control_field.upper()}-SAVE"[:_MAX_NAME],
                 f"PIC X({ctl_w}) VALUE SPACES",
             ))
 
@@ -978,16 +978,16 @@ def gen_report_ws(report_name: str, content: str,
             continue
         for fld_name in tokens[1:]:
             fname = fld_name.upper()
-            lines.append(_field_line(f"{_A}01  ", f"WS-{fname}-TOT"[:30],
+            lines.append(_field_line(f"{_A}01  ", f"WS-{fname}-TOT"[:_MAX_NAME],
                                      "PIC S9(12)V9(2) COMP-3 VALUE ZERO"))
-            lines.append(_field_line(f"{_A}01  ", f"WS-{fname}-TOT-D"[:30],
+            lines.append(_field_line(f"{_A}01  ", f"WS-{fname}-TOT-D"[:_MAX_NAME],
                                      "PIC Z(11)9.99"))
 
     if any(raw.strip().upper().startswith("COUNT")
            for raw in content.splitlines()):
-        lines.append(_field_line(f"{_A}01  ", f"WS-{rpt}-CNT"[:30],
+        lines.append(_field_line(f"{_A}01  ", f"WS-{rpt}-CNT"[:_MAX_NAME],
                                  "PIC S9(8) COMP-3 VALUE ZERO"))
-        lines.append(_field_line(f"{_A}01  ", f"WS-{rpt}-CNT-D"[:30],
+        lines.append(_field_line(f"{_A}01  ", f"WS-{rpt}-CNT-D"[:_MAX_NAME],
                                  "PIC Z(7)9"))
 
     return "\n".join(lines)
@@ -1008,7 +1008,7 @@ def _inject_vsam_key(file: EZTFile) -> EZTFile:
     """
     if file.org != "VSAM":
         return file
-    key_name = (file.name + "-KEY")[:30]
+    key_name = (file.name + "-KEY")[:_MAX_NAME]
     if any(f.name.upper() == key_name.upper() for f in file.fields):
         return file
 
