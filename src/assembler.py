@@ -1075,7 +1075,81 @@ def assemble(
     procedure_div = "       PROCEDURE DIVISION.\n" + proc_body
 
     cobol = "\n\n".join([ident, env_div, data_div, procedure_div]) + "\n"
+    cobol = align_keywords(cobol)          # snap PIC/VALUE/TO/THRU to columns
     return _enforce_col_limit(cobol)
+
+
+# ── Keyword column alignment ─────────────────────────────────────────────────
+#
+# Shop convention: certain keywords always start in a fixed column so a data
+# item's PIC/VALUE and a statement's TO/THRU line up vertically for reading.
+# Targets are 1-indexed columns:
+#
+#   THRU → 40, TO → 42   (PROCEDURE DIVISION only — PERFORM ... THRU,
+#                         MOVE/ADD ... TO.  ASSIGN TO / GO TO are excluded.)
+#   PIC  → 45, VALUE → 60 (DATA DIVISION data-item lines.)
+#
+# For each keyword we left-pad with spaces so it starts on its column.  When
+# the text before it already reaches the column (no room for even one
+# separating space), the keyword and everything after it move to a fresh
+# continuation line that begins at the target column — always valid COBOL
+# (a data entry / statement may span lines), never a truncated identifier.
+# Any resulting line past column 72 is folded afterwards by _enforce_col_limit.
+
+_ALIGN_PROC = (("THRU", 40), ("TO", 42))       # PROCEDURE DIVISION keywords
+_ALIGN_DATA = (("PIC", 45), ("VALUE", 60))     # DATA DIVISION keywords
+
+# TO preceded by one of these is NOT a MOVE/ADD target — leave it alone.
+_TO_SKIP_PREV = {"GO", "ASSIGN"}
+
+
+def _find_kw_idx(masked: str, kw: str) -> int:
+    """Index of the first `kw` token in `masked` (literals already blanked),
+    matched only as a whitespace-delimited word so it never fires inside a
+    hyphenated name (MOVE-TO-X) or a longer word (INTO / PICTURE).  Returns
+    -1 if absent.  For TO, an ASSIGN TO / GO TO occurrence is skipped."""
+    for m in re.finditer(r"(?<=\s)" + kw + r"(?=\s|$)", masked):
+        idx = m.start()
+        if kw == "TO":
+            before = masked[:idx].rstrip().rsplit(None, 1)
+            if before and before[-1].upper() in _TO_SKIP_PREV:
+                continue
+        return idx
+    return -1
+
+
+def _align_one_line(line: str, targets: Tuple[Tuple[str, int], ...]) -> List[str]:
+    """Align each (keyword, col) on `line`, returning one or more physical
+    lines (extra lines appear only when a keyword had to move down)."""
+    lines = [line.rstrip()]
+    for kw, col in targets:
+        tail = lines[-1]                       # the keyword lives on the tail
+        idx = _find_kw_idx(_blank_literals(tail), kw)
+        if idx < 0:
+            continue
+        prefix = tail[:idx].rstrip()
+        rest = tail[idx:]                      # keyword + everything after it
+        target0 = col - 1                      # 0-based start column
+        if len(prefix) <= target0 - 1:         # room for ≥1 separating space
+            lines[-1] = prefix + " " * (target0 - len(prefix)) + rest
+        else:                                   # no room → move down a line
+            lines[-1] = prefix
+            lines.append(" " * target0 + rest)
+    return lines
+
+
+def align_keywords(cobol: str) -> str:
+    """Snap PIC/VALUE (DATA) and TO/THRU (PROCEDURE) to their shop columns."""
+    out: List[str] = []
+    in_proc = False
+    for line in cobol.splitlines():
+        if re.match(r"\s*PROCEDURE\s+DIVISION", line, re.IGNORECASE):
+            in_proc = True
+        if not line.strip() or _is_proc_comment(line):
+            out.append(line)
+            continue
+        out.extend(_align_one_line(line, _ALIGN_PROC if in_proc else _ALIGN_DATA))
+    return "\n".join(out)
 
 
 # ── Column-72 enforcement ────────────────────────────────────────────────────
