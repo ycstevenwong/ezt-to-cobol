@@ -1157,22 +1157,25 @@ def _fmt_guard(hook: Optional[CopybookHook], file_name: str) -> str:
     return template.format(file=file_name)
 
 
-def _hook_body(hook: CopybookHook, file_name: str) -> List[str]:
+def _hook_body(hook: CopybookHook, file_name: str,
+               indent: str = "               ") -> List[str]:
     """Statements that go inside the IF guard for a hook-driven file event.
 
     Order: each before_perform statement (with {file} substituted), then
     the PERFORM line — either single-paragraph or THRU form depending on
     whether perform_thru is set.
+
+    `indent` is the leading whitespace for each line; the default suits an
+    IF guard, and callers nesting the body deeper (e.g. inside READ's
+    IF/ELSE) pass a wider indent.
     """
     body: List[str] = []
     for stmt in hook.before_perform:
-        body.append(f"               {stmt.format(file=file_name)}")
+        body.append(f"{indent}{stmt.format(file=file_name)}")
     if hook.perform_thru:
-        body.append(
-            f"               PERFORM {hook.perform} THRU {hook.perform_thru}"
-        )
+        body.append(f"{indent}PERFORM {hook.perform} THRU {hook.perform_thru}")
     else:
-        body.append(f"               PERFORM {hook.perform}")
+        body.append(f"{indent}PERFORM {hook.perform}")
     return body
 
 
@@ -1231,3 +1234,70 @@ def gen_open_close_paragraphs(
     close_lines += ["       CLOSE-FILES-EXIT.", "           EXIT."]
 
     return "\n".join(open_lines + [""] + close_lines)
+
+
+def _input_files(files: List[EZTFile], file_modes: Dict[str, str]) -> List[EZTFile]:
+    """The subset of files opened INPUT — the only ones that get a READ
+    paragraph and an EOF flag (OUTPUT files are never READ)."""
+    return [f for f in files if _resolved_mode(f, file_modes) == "INPUT"]
+
+
+def gen_read_paragraphs(
+    files: List[EZTFile],
+    file_modes: Dict[str, str],
+    hooks: Dict[str, CopybookHook],
+) -> str:
+    """Emit a READ-<FILE> + READ-<FILE>-EXIT paragraph for each INPUT file.
+
+    Each paragraph READs the file, sets WS-<FILE>-EOF to 'Y' on end-of-file
+    (file status 10), and on any OTHER non-zero status runs the configured
+    file_read_failure copybook hook — mirroring OPEN/CLOSE handling.  Only
+    INPUT files qualify; OUTPUT files are never READ.  Returns "" when no
+    INPUT file exists.
+    """
+    inputs = _input_files(files, file_modes)
+    if not inputs:
+        return ""
+
+    read_hook = hooks.get("file_read_failure")
+    blocks: List[str] = []
+    for f in inputs:
+        name = f.name
+        lines = [
+            f"       READ-{name}.",
+            f"           READ {name}",
+            f"           IF WS-{name}-STATUS NOT = ZEROES",
+            f"               IF WS-{name}-STATUS = 10",
+            f"                   MOVE 'Y' TO WS-{name}-EOF",
+            f"               ELSE",
+        ]
+        if read_hook:
+            # abend branch nested inside outer-IF + ELSE → 19-space indent
+            lines.extend(_hook_body(read_hook, name,
+                                    indent="                   "))
+        else:
+            lines.append(
+                f"                   DISPLAY 'ERROR READING {name} STATUS: ' "
+                f"WS-{name}-STATUS"
+            )
+            lines.append("                   STOP RUN")
+        lines += [
+            "               END-IF",
+            "           END-IF.",
+            f"       READ-{name}-EXIT.",
+            "           EXIT.",
+        ]
+        blocks.append("\n".join(lines))
+
+    return "\n\n".join(blocks)
+
+
+def gen_read_eof_ws(files: List[EZTFile], file_modes: Dict[str, str]) -> str:
+    """One `01 WS-<FILE>-EOF PIC X VALUE 'N'` per INPUT file — the end-of-file
+    flag the generated READ-<FILE> paragraph sets and the driver loop tests."""
+    inputs = _input_files(files, file_modes)
+    lines = [
+        f"{_A}01  {('WS-' + f.name + '-EOF'):<33} PIC X(1) VALUE 'N'."
+        for f in inputs
+    ]
+    return "\n".join(lines)

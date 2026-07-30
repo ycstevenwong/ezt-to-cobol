@@ -8,16 +8,20 @@ from src.rule_converter import gen_report_ws
 from src.rules import CopybookHook, load_abend_ws, load_copybooks
 from src.structured_parser import parse_preamble
 
-# Synthetic key the converter stashes Python-generated OPEN/CLOSE paragraphs
-# under.  Duplicated here (not imported from src.converter) to keep the
-# assembler free of import cycles — converter already imports assembler.
-_OPEN_CLOSE_KEY = "open_close:paragraphs"
+# Synthetic keys the converter stashes Python-generated code under.
+# Duplicated here (not imported from src.converter) to keep the assembler
+# free of import cycles — converter already imports assembler.
+_OPEN_CLOSE_KEY  = "open_close:paragraphs"
+_READ_PARAS_KEY  = "read:paragraphs"
+_READ_EOF_WS_KEY = "read_eof:ws"
 
 # Events Python deterministically generates code for today.  Used to decide
 # which copybooks should get a COPY line emitted into the final program;
 # events listed in copybooks.yaml whose code Python doesn't yet emit are
 # left dormant (the YAML stays declarative for the next phase).
-_PY_GENERATED_EVENTS = ("file_open_failure", "file_close_failure")
+_PY_GENERATED_EVENTS = (
+    "file_open_failure", "file_close_failure", "file_read_failure",
+)
 
 _IDENT_DIV = """\
        IDENTIFICATION DIVISION.
@@ -465,6 +469,16 @@ def _strip_paragraphs(cobol: str, names: Tuple[str, ...]) -> str:
     return "\n".join(out)
 
 
+def _para_def_names(cobol: str) -> Tuple[str, ...]:
+    """Every Area-A paragraph-definition name in `cobol` (headers only).
+
+    Used to learn the dynamic READ-<FILE> / READ-<FILE>-EXIT names Python
+    generated so a duplicate the LLM emits can be stripped — these names
+    are file-derived and can't be listed statically like _PY_OWNED_PARAS.
+    """
+    return tuple(m.group(1).upper() for m in _PARA_DEF_RE.finditer(cobol))
+
+
 # ── Auto-declaration of missing variables ────────────────────────────────────
 #
 # Even with the identifier allow-list in the prompt, the LLM sometimes
@@ -823,12 +837,15 @@ def gen_missing_var_ws(proc_text: str, data_text: str,
 def _active_copybook_events(converted: Dict[str, str]) -> set:
     """Copybook events whose Python-generated code is present in `converted`.
 
-    Only wired events count.  Today that is file_open_failure /
-    file_close_failure, active iff the converter produced OPEN-FILES.
+    Wired events: file_open_failure / file_close_failure (active iff the
+    converter produced OPEN-FILES) and file_read_failure (active iff it
+    produced READ-<FILE> paragraphs).
     """
     active: set = set()
     if converted.get(_OPEN_CLOSE_KEY):
         active.update({"file_open_failure", "file_close_failure"})
+    if converted.get(_READ_PARAS_KEY):
+        active.add("file_read_failure")
     return active
 
 
@@ -953,6 +970,14 @@ def assemble(
     # (which PERFORMs them by name) appears first.
     open_close_text = (converted.get(_OPEN_CLOSE_KEY) or "").strip("\n")
 
+    # Python-generated READ-<FILE> paragraphs + their WS-<FILE>-EOF flags
+    # (one per INPUT file).  Paragraphs are spliced into PROCEDURE alongside
+    # OPEN/CLOSE; the EOF flags go straight into WORKING-STORAGE.
+    read_paras_text = (converted.get(_READ_PARAS_KEY) or "").strip("\n")
+    read_eof_ws = (converted.get(_READ_EOF_WS_KEY) or "").strip("\n")
+    if read_eof_ws:
+        ws_parts.append(read_eof_ws)
+
     # Single combined JOB+REPORT LLM result — extract WS additions and
     # the unified PROCEDURE DIVISION exactly once.
     combined = (converted.get("logic:combined") or "").strip("\n")
@@ -969,11 +994,17 @@ def assemble(
         )
         clean_proc = proc[proc_m.end():].strip("\n") if proc_m else proc.strip("\n")
         clean_proc = _strip_data_decls(clean_proc)
-        # Defensive: if Python already emitted OPEN-FILES / CLOSE-FILES,
-        # drop any duplicate the LLM produced despite the prompt telling
-        # it not to.  PERFORM references in MAIN-PROCESS stay intact.
+        # Defensive: if Python already emitted OPEN-FILES / CLOSE-FILES /
+        # READ-<FILE>, drop any duplicate the LLM produced despite the prompt
+        # telling it not to.  PERFORM references stay intact (they don't match
+        # _PARA_DEF_RE).  READ-<FILE> names are file-derived, so read them off
+        # the generated text rather than a static list.
         if open_close_text:
             clean_proc = _strip_paragraphs(clean_proc, _PY_OWNED_PARAS)
+        if read_paras_text:
+            clean_proc = _strip_paragraphs(
+                clean_proc, _para_def_names(read_paras_text)
+            )
         # Rename any paragraph whose bare name collides with a COBOL
         # reserved word (INITIAL, TERMINATE, etc.) — both definitions
         # and PERFORM references are rewritten in lockstep.
@@ -990,11 +1021,14 @@ def assemble(
         if clean_proc:
             procedure_parts.append(clean_proc)
 
-    # Append the Python-generated OPEN-FILES / CLOSE-FILES after the LLM's
-    # logic.  Order doesn't matter for COBOL paragraph resolution, but
-    # placing them after MAIN-PROCESS keeps the program's narrative flow.
+    # Append the Python-generated OPEN-FILES / CLOSE-FILES and READ-<FILE>
+    # paragraphs after the LLM's logic.  Order doesn't matter for COBOL
+    # paragraph resolution, but placing them after MAIN-PROCESS keeps the
+    # program's narrative flow.
     if open_close_text:
         procedure_parts.append(open_close_text)
+    if read_paras_text:
+        procedure_parts.append(read_paras_text)
 
     # Resolve which copybook COPY lines to emit per division.  Only events
     # Python actually generated code for contribute to the dedup set; events
@@ -1007,7 +1041,7 @@ def assemble(
     # (WS-ABEND-CODE / WS-ABEND-MSG / WS-ABEND-STATUS by default).  Emitted
     # only when at least one wired event fires; comment items out of YAML
     # if your copybook already declares them.
-    if open_close_text:
+    if open_close_text or read_paras_text:
         abend_ws_items = load_abend_ws()
         if abend_ws_items:
             ws_parts.append("\n".join(abend_ws_items))
