@@ -295,7 +295,8 @@ def gen_file_control(files: List[EZTFile]) -> str:
             clauses.append(f"    RECORD KEY IS {(f.name + '-KEY')[:_MAX_NAME]}")
         clauses.append(f"    FILE STATUS IS WS-{f.name}-STATUS.")
         blocks.append("\n".join(clauses))
-    return "\n".join(blocks)
+    # Blank line between each file's SELECT block for readability.
+    return "\n\n".join(blocks)
 
 
 def gen_file_status_ws(files: List[EZTFile]) -> str:
@@ -321,7 +322,8 @@ def gen_file_section(files: List[EZTFile]) -> str:
         fd = [f"{_A}FD  {f.name}."]
         fd += _record_layout(f)
         blocks.append("\n".join(fd))
-    return "\n".join(blocks)
+    # Blank line before each subsequent FD for readability.
+    return "\n\n".join(blocks)
 
 
 # ── WORKING-STORAGE ─────────────────────────────────────────────────────────────
