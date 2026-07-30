@@ -144,9 +144,6 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
         f = node.field
         fname = f.name[:_MAX_NAME]
 
-        if f.heading:
-            lines.append(f"      * HEADING: {f.heading}")
-
         same_start = _flatten_same_start_chain(node)
         if same_start is not None:
             # Base field
@@ -255,16 +252,11 @@ def _record_layout(file: EZTFile) -> List[str]:
             rec_name = _safe_name(file.name + "-REC")
             trailing = rec_len - root.field.end
             out = [f"{_A}01  {rec_name}."]
-            if root.field.heading:
-                out.append(f"      * HEADING: {root.field.heading}")
             out.append(_field_line(f"{_B}05  ", _safe_name(root.field.name), pic))
             out.append(_field_line(f"{_B}05  ", "FILLER", f"PIC X({trailing})"))
             return out
         # Otherwise the lone field is the whole record.
-        lines = []
-        if root.field.heading:
-            lines.append(f"      * HEADING: {root.field.heading}")
-        lines.append(_field_line(f"{_A}01  ", _safe_name(root.field.name), pic))
+        lines = [_field_line(f"{_A}01  ", _safe_name(root.field.name), pic)]
         return lines
 
     # Multiple roots → sequential layout under a group record.
