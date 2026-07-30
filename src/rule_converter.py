@@ -141,9 +141,6 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
         f = node.field
         fname = f.name[:30]
 
-        if f.heading:
-            lines.append(f"      * HEADING: {f.heading}")
-
         same_start = _flatten_same_start_chain(node)
         if same_start is not None:
             # Base field
@@ -252,16 +249,11 @@ def _record_layout(file: EZTFile) -> List[str]:
             rec_name = _safe_name(file.name + "-REC")
             trailing = rec_len - root.field.end
             out = [f"{_A}01  {rec_name}."]
-            if root.field.heading:
-                out.append(f"      * HEADING: {root.field.heading}")
             out.append(_field_line(f"{_B}05  ", _safe_name(root.field.name), pic))
             out.append(_field_line(f"{_B}05  ", "FILLER", f"PIC X({trailing})"))
             return out
         # Otherwise the lone field is the whole record.
-        lines = []
-        if root.field.heading:
-            lines.append(f"      * HEADING: {root.field.heading}")
-        lines.append(_field_line(f"{_A}01  ", _safe_name(root.field.name), pic))
+        lines = [_field_line(f"{_A}01  ", _safe_name(root.field.name), pic)]
         return lines
 
     # Multiple roots → sequential layout under a group record.
@@ -714,17 +706,6 @@ def _build_sub_name(sub_prefix: str, source_field: str,
     return candidate   # give up — should never realistically happen
 
 
-def _field_pic(field: Union[EZTField, EZTDefine]) -> str:
-    return _pic(field.type, field.length, field.decimals)
-
-
-def _format_map_line(source: str, target: str,
-                     fld: Optional[Union[EZTField, EZTDefine]]) -> str:
-    """One source-to-target comment line, with single-space separators."""
-    pic_hint = f" {_field_pic(fld)}" if fld else ""
-    return f"      *   {source}{pic_hint} -> {target}"
-
-
 def _resolve_subfield_names(
     sub_prefix: str,
     fragments:  List[_ColFragment],
@@ -743,29 +724,6 @@ def _resolve_subfield_names(
     return mapping
 
 
-def _gen_field_map_comments(
-    layout_name: str,
-    fragments:   List[_ColFragment],
-    name_map:    Dict[str, str],
-    lookup:      Optional[Dict[str, Union[EZTField, EZTDefine]]] = None,
-) -> List[str]:
-    """Emit comment lines mapping source EZT fields to generated subfields.
-
-    Uses the pre-resolved `name_map` (source -> target) so the comment
-    block lists exactly the same names the layout below emits — no risk
-    of the comment naming one identifier and the 05-line another.
-    """
-    field_refs = [f for f in fragments if f.field]
-    if not field_refs:
-        return []
-    out = [f"      * {layout_name} MOVE-targets:"]
-    for frag in sorted(field_refs, key=lambda f: f.col):
-        sub = name_map.get(frag.field, "?")
-        fld = lookup.get(frag.field) if (lookup and frag.field) else None
-        out.append(_format_map_line(frag.field, sub, fld))
-    return out
-
-
 def _resolve_dtl_names(fields: List[str]) -> Dict[str, str]:
     """source-field -> unique WS-DTL-<...> target name, deduped across the
     list so long names that truncate to the same 30 chars don't collide.
@@ -778,23 +736,6 @@ def _resolve_dtl_names(fields: List[str]) -> Dict[str, str]:
         # Reuse _build_sub_name with the WS-DTL prefix so dedup logic applies.
         mapping[fname] = _build_sub_name("WS-DTL", fname, used)
     return mapping
-
-
-def _gen_dtl_map_comments(
-    rpt:      str,
-    fields:   List[str],
-    name_map: Dict[str, str],
-    lookup:   Optional[Dict[str, Union[EZTField, EZTDefine]]] = None,
-) -> List[str]:
-    """Emit comment lines for the auto-PRINT detail layout subfields."""
-    if not fields:
-        return []
-    out = [f"      * WS-{rpt}-DTL MOVE-targets:"]
-    for fname in fields:
-        sub = name_map.get(fname, _safe_name(f"WS-DTL-{fname}"))
-        fld = lookup.get(fname.upper()) if lookup else None
-        out.append(_format_map_line(fname, sub, fld))
-    return out
 
 
 def _gen_positioned_line_block(
@@ -860,10 +801,7 @@ def _gen_positioned_line_block(
     trailing = width - (cur_col - 1)
     if trailing > 0:
         items.append(("FILLER", f"PIC X({trailing})", "VALUE SPACES"))
-    # Prepend a comment block listing the same source -> target mapping
-    # the 05 lines emit (so the LLM sees the exact names to MOVE into).
-    comments = _gen_field_map_comments(layout_name, fragments, name_map, lookup)
-    return comments + _layout_block(layout_name, items)
+    return _layout_block(layout_name, items)
 
 
 def _short_suffix(kind: str, line_num: Optional[int]) -> str:
@@ -903,7 +841,7 @@ def _gen_dtl_block(rpt: str, fields: List[str],
                    width: int) -> List[str]:
     if not fields:
         return []
-    # Resolve subfield names once (deduped) and share with the comment block.
+    # Resolve subfield names once (deduped) for the 05 detail-line items.
     name_map = _resolve_dtl_names(fields)
 
     items: List[Tuple[str, str, str]] = []
@@ -926,8 +864,7 @@ def _gen_dtl_block(rpt: str, fields: List[str],
     trailing = width - used
     if trailing > 0:
         items.append(("FILLER", f"PIC X({trailing})", "VALUE SPACES"))
-    return (_gen_dtl_map_comments(rpt, fields, name_map, lookup)
-            + _layout_block(f"WS-{rpt}-DTL", items))
+    return _layout_block(f"WS-{rpt}-DTL", items)
 
 
 def _gen_hdg_block(rpt: str, fields: List[str],

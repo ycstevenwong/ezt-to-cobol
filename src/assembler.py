@@ -806,25 +806,17 @@ def gen_missing_var_ws(proc_text: str, data_text: str,
     if not evidence:
         return ""
 
-    lines: List[str] = [
-        "      * AUTO-DECLARED: the following identifiers are referenced by",
-        "      * the generated logic but were missing from the DATA DIVISION.",
-        "      * PICs are inferred from usage -- review before compiling.",
-    ]
-    emitted = False
+    lines: List[str] = []
     for name in sorted(evidence):
         e = evidence[name]
         if e.subscripted:
-            lines.append(f"      * {name} is referenced with a subscript --")
-            lines.append("      * OCCURS size unknown; declare it manually.")
+            # Can't size a subscripted item (OCCURS count unknown) — skip it;
+            # it must be declared manually.
             continue
         pic, value = _decide_pic(e, pics)
         suffix = f"{pic} {value}".strip()
         lines.append(f"       01  {name:<33} {suffix}.")
-        emitted = True
 
-    if not emitted and len(lines) <= 3:
-        return ""
     return "\n".join(lines)
 
 
