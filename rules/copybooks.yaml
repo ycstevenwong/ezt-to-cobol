@@ -21,10 +21,17 @@
 #                    emits  PERFORM <perform> THRU <perform_thru>.
 #                    Set this when your shop's convention is to wrap
 #                    the routine in a <name>-RTN / <name>-EXIT pair.
+#   abend_code_base  (optional) Starting abend code for this event.  With
+#                    N files, the k-th file (0-based, in OPEN order) gets
+#                    base + k, so every file has a distinct code.  Give each
+#                    event its own base with enough spacing that the ranges
+#                    don't overlap (e.g. open 10001, close 10501).  Referenced
+#                    from before_perform via the {code} placeholder.
 #   before_perform   (optional) Ordered list of statements emitted
 #                    INSIDE the IF guard, BEFORE the PERFORM line.
-#                    Typical use: populate abend variables.
-#                    {file} is substituted with the FD name per file.
+#                    Typical use: populate abend variables.  Placeholders:
+#                    {file} -> the FD name; {code} -> abend_code_base + the
+#                    file's 0-based OPEN position (per-file abend code).
 #   when             (optional) IF-clause template.  Defaults to
 #                    "WS-{file}-STATUS NOT = ZEROES" for file_* events.
 #
@@ -38,24 +45,26 @@ abend_ws:
   # - "       01  WS-ABEND-STATUS     PIC X(02) VALUE SPACES."
 
 file_open_failure:
-  copy_ws:        ERRDATA
-  copy_procedure: ERRRTN
-  perform:        FILE-ERROR-RTN
-  perform_thru:   FILE-ERROR-EXIT
-  when:           "WS-{file}-STATUS NOT = ZEROES"
+  copy_ws:         ERRDATA
+  copy_procedure:  ERRRTN
+  perform:         FILE-ERROR-RTN
+  perform_thru:    FILE-ERROR-EXIT
+  when:            "WS-{file}-STATUS NOT = ZEROES"
+  abend_code_base: 10001
   before_perform:
-    - "MOVE 10001 TO WS-ABEND-CODE"
+    - "MOVE {code} TO WS-ABEND-CODE"
     - "MOVE 'INVALID {file} FILE OPEN' TO WS-ABEND-MSG"
     - "MOVE WS-{file}-STATUS TO WS-ABEND-STATUS"
 
 file_close_failure:
-  copy_ws:        ERRDATA
-  copy_procedure: ERRRTN
-  perform:        FILE-ERROR-RTN
-  perform_thru:   FILE-ERROR-EXIT
-  when:           "WS-{file}-STATUS NOT = ZEROES"
+  copy_ws:         ERRDATA
+  copy_procedure:  ERRRTN
+  perform:         FILE-ERROR-RTN
+  perform_thru:    FILE-ERROR-EXIT
+  when:            "WS-{file}-STATUS NOT = ZEROES"
+  abend_code_base: 10501
   before_perform:
-    - "MOVE 10002 TO WS-ABEND-CODE"
+    - "MOVE {code} TO WS-ABEND-CODE"
     - "MOVE 'INVALID {file} FILE CLOSE' TO WS-ABEND-MSG"
     - "MOVE WS-{file}-STATUS TO WS-ABEND-STATUS"
 

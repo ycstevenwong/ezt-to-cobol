@@ -1157,16 +1157,32 @@ def _fmt_guard(hook: Optional[CopybookHook], file_name: str) -> str:
     return template.format(file=file_name)
 
 
-def _hook_body(hook: CopybookHook, file_name: str) -> List[str]:
+class _SafeFmt(dict):
+    """str.format_map backing dict that leaves unknown placeholders intact
+    (e.g. a stray '{code}' when no abend_code_base was configured) instead
+    of raising KeyError."""
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
+
+def _hook_body(hook: CopybookHook, file_name: str, index: int = 0) -> List[str]:
     """Statements that go inside the IF guard for a hook-driven file event.
 
-    Order: each before_perform statement (with {file} substituted), then
-    the PERFORM line — either single-paragraph or THRU form depending on
-    whether perform_thru is set.
+    Order: each before_perform statement (with {file} and {code}
+    substituted), then the PERFORM line — either single-paragraph or THRU
+    form depending on whether perform_thru is set.
+
+    {code} resolves to abend_code_base + `index` (the file's 0-based OPEN
+    position), giving each file a distinct abend code.  When the event has
+    no abend_code_base, {code} is left untouched (surfaces as a visible
+    error rather than a wrong number).
     """
+    subs = _SafeFmt(file=file_name)
+    if hook.abend_code_base is not None:
+        subs["code"] = hook.abend_code_base + index
     body: List[str] = []
     for stmt in hook.before_perform:
-        body.append(f"               {stmt.format(file=file_name)}")
+        body.append(f"               {stmt.format_map(subs)}")
     if hook.perform_thru:
         body.append(
             f"               PERFORM {hook.perform} THRU {hook.perform_thru}"
@@ -1195,12 +1211,12 @@ def gen_open_close_paragraphs(
     open_hook  = hooks.get("file_open_failure")
     close_hook = hooks.get("file_close_failure")
 
-    def open_block(f: EZTFile) -> List[str]:
+    def open_block(f: EZTFile, index: int) -> List[str]:
         mode = _resolved_mode(f, file_modes)
         lines = [f"           OPEN {mode} {f.name}"]
         lines.append(f"           IF {_fmt_guard(open_hook, f.name)}")
         if open_hook:
-            lines.extend(_hook_body(open_hook, f.name))
+            lines.extend(_hook_body(open_hook, f.name, index))
         else:
             lines.append(
                 f"               DISPLAY 'ERROR OPENING {f.name} STATUS: ' "
@@ -1210,23 +1226,23 @@ def gen_open_close_paragraphs(
         lines.append("           END-IF")
         return lines
 
-    def close_block(f: EZTFile) -> List[str]:
+    def close_block(f: EZTFile, index: int) -> List[str]:
         lines = [f"           CLOSE {f.name}"]
         if close_hook:
             lines.append(f"           IF {_fmt_guard(close_hook, f.name)}")
-            lines.extend(_hook_body(close_hook, f.name))
+            lines.extend(_hook_body(close_hook, f.name, index))
             lines.append("           END-IF")
         return lines
 
     open_lines: List[str] = ["       OPEN-FILES."]
-    for f in files:
-        open_lines.extend(open_block(f))
+    for i, f in enumerate(files):
+        open_lines.extend(open_block(f, i))
     open_lines[-1] = open_lines[-1] + "."        # period on the last statement
     open_lines += ["       OPEN-FILES-EXIT.", "           EXIT."]
 
     close_lines: List[str] = ["       CLOSE-FILES."]
-    for f in files:
-        close_lines.extend(close_block(f))
+    for i, f in enumerate(files):
+        close_lines.extend(close_block(f, i))
     close_lines[-1] = close_lines[-1] + "."
     close_lines += ["       CLOSE-FILES-EXIT.", "           EXIT."]
 
