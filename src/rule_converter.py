@@ -196,15 +196,16 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
 
 # ── Record layout ───────────────────────────────────────────────────────────────
 
-_DEFAULT_PRINT_WIDTH = 133   # standard mainframe print-line width (132 + carriage-control)
+_DEFAULT_PRINT_WIDTH = 132   # standard mainframe print-line width
 
 
 def _effective_rec_length(file: EZTFile) -> int:
     """Pick a usable record length even when EZT omits it.
 
-    Priority: explicit rec_length > end of the last declared field > 133.
-    The 133 default covers the common case of a REPORT output file that
-    EZT leaves unsized: every report needs *some* buffer to WRITE FROM.
+    Priority: explicit rec_length > end of the last declared field >
+    _DEFAULT_PRINT_WIDTH.  The default covers the common case of a REPORT
+    output file that EZT leaves unsized: every report needs *some* buffer
+    to WRITE FROM.
     """
     if file.rec_length:
         return file.rec_length
@@ -977,7 +978,7 @@ def gen_report_ws(report_name: str, content: str,
     rpt = report_name.upper()
     line_limit  = 55
     page_limit  = 60
-    print_width = 133
+    print_width = _DEFAULT_PRINT_WIDTH
 
     for raw in content.splitlines():
         tokens = raw.strip().split()
