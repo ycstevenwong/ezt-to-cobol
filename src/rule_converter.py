@@ -13,9 +13,6 @@ _C = " " * 15  # col 16          — 10-level within a WS group
 
 _PIC_COL = 49  # target 0-indexed column for the PIC keyword (consistent across all depths)
 
-_MAX_NAME = 25  # generated COBOL identifier length cap (COBOL allows 30;
-                # capped tighter so shop-appended suffixes still fit in 30)
-
 
 def _field_line(prefix: str, name: str, pic: str) -> str:
     """Return a COBOL data-item line with PIC aligned to _PIC_COL."""
@@ -142,7 +139,10 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
         if gap > 0:
             lines.append(_field_line(prefix, "FILLER", f"PIC X({gap})"))
         f = node.field
-        fname = f.name[:_MAX_NAME]
+        fname = f.name[:30]
+
+        if f.heading:
+            lines.append(f"      * HEADING: {f.heading}")
 
         same_start = _flatten_same_start_chain(node)
         if same_start is not None:
@@ -156,7 +156,7 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
             child_prefix = f"{child_indent}{child_lvl}  "
             for alt in same_start:
                 af = alt.field
-                alt_name = af.name[:_MAX_NAME]
+                alt_name = af.name[:30]
                 lines.append(f"{prefix}FILLER REDEFINES {fname}.")
                 lines.append(_field_line(child_prefix, alt_name,
                                          _pic(af.type, af.length, af.decimals)))
@@ -196,16 +196,15 @@ def _render_subtree(nodes: List[_TreeNode], depth: int, cur: int, end: int) -> L
 
 # ── Record layout ───────────────────────────────────────────────────────────────
 
-_DEFAULT_PRINT_WIDTH = 132   # standard mainframe print-line width
+_DEFAULT_PRINT_WIDTH = 133   # standard mainframe print-line width (132 + carriage-control)
 
 
 def _effective_rec_length(file: EZTFile) -> int:
     """Pick a usable record length even when EZT omits it.
 
-    Priority: explicit rec_length > end of the last declared field >
-    _DEFAULT_PRINT_WIDTH.  The default covers the common case of a REPORT
-    output file that EZT leaves unsized: every report needs *some* buffer
-    to WRITE FROM.
+    Priority: explicit rec_length > end of the last declared field > 133.
+    The 133 default covers the common case of a REPORT output file that
+    EZT leaves unsized: every report needs *some* buffer to WRITE FROM.
     """
     if file.rec_length:
         return file.rec_length
@@ -221,7 +220,7 @@ def _record_layout(file: EZTFile) -> List[str]:
         # Emit a single elementary record buffer at the effective length so
         # the FD is valid and the procedure code can WRITE / WRITE FROM it.
         rec_len = _effective_rec_length(file)
-        rec_name = (file.name + "-REC")[:_MAX_NAME]
+        rec_name = (file.name + "-REC")[:30]
         return [_field_line(f"{_A}01  ", rec_name, f"PIC X({rec_len})")]
 
     if len(roots) == 1 and roots[0].children and not roots[0].field.occurs:
@@ -246,17 +245,22 @@ def _record_layout(file: EZTFile) -> List[str]:
         pic = _pic(root.field.type, root.field.length, root.field.decimals) + _occurs(root.field.occurs)
         # If the record is wider than this lone field (e.g. a synthetic VSAM
         # key occupying the first few bytes of a no-fields file), wrap in a
-        # group with trailing FILLER so the 01 record spans the full length.
+        # group with trailing FILLER so the FD record matches RECORD CONTAINS.
         rec_len = _effective_rec_length(file)
         if rec_len > root.field.end:
             rec_name = _safe_name(file.name + "-REC")
             trailing = rec_len - root.field.end
             out = [f"{_A}01  {rec_name}."]
+            if root.field.heading:
+                out.append(f"      * HEADING: {root.field.heading}")
             out.append(_field_line(f"{_B}05  ", _safe_name(root.field.name), pic))
             out.append(_field_line(f"{_B}05  ", "FILLER", f"PIC X({trailing})"))
             return out
         # Otherwise the lone field is the whole record.
-        lines = [_field_line(f"{_A}01  ", _safe_name(root.field.name), pic)]
+        lines = []
+        if root.field.heading:
+            lines.append(f"      * HEADING: {root.field.heading}")
+        lines.append(_field_line(f"{_A}01  ", _safe_name(root.field.name), pic))
         return lines
 
     # Multiple roots → sequential layout under a group record.
@@ -266,7 +270,7 @@ def _record_layout(file: EZTFile) -> List[str]:
     rec_name = f"{file.name}-REC"
     if rec_name.upper() in field_names:
         rec_name = f"{file.name}-RECORD"
-    lines = [f"{_A}01  {rec_name[:_MAX_NAME]}."]
+    lines = [f"{_A}01  {rec_name[:30]}."]
     lines.extend(_render_subtree(roots, 1, 1, rec_end))
     return lines
 
@@ -292,11 +296,10 @@ def gen_file_control(files: List[EZTFile]) -> str:
             f"    ACCESS MODE IS {acc}",
         ]
         if f.org == "VSAM":
-            clauses.append(f"    RECORD KEY IS {(f.name + '-KEY')[:_MAX_NAME]}")
+            clauses.append(f"    RECORD KEY IS {(f.name + '-KEY')[:30]}")
         clauses.append(f"    FILE STATUS IS WS-{f.name}-STATUS.")
         blocks.append("\n".join(clauses))
-    # Blank line between each file's SELECT block for readability.
-    return "\n\n".join(blocks)
+    return "\n".join(blocks)
 
 
 def gen_file_status_ws(files: List[EZTFile]) -> str:
@@ -312,18 +315,13 @@ def gen_file_status_ws(files: List[EZTFile]) -> str:
 # Full COBOL indentation required — assembler inserts this verbatim.
 
 def gen_file_section(files: List[EZTFile]) -> str:
-    # No RECORD CONTAINS clause: the 01 record layout below already fixes the
-    # record length, and omitting it means a developer swapping in a copybook
-    # record (whose length may differ) doesn't also have to keep a hand-written
-    # character count in sync.  The FD entry is terminated by a period on the
-    # FD line itself.
     blocks = []
     for f in files:
-        fd = [f"{_A}FD  {f.name}."]
+        fd = [f"{_A}FD  {f.name}"]
+        fd.append(f"{_B}RECORD CONTAINS {_effective_rec_length(f)} CHARACTERS.")
         fd += _record_layout(f)
         blocks.append("\n".join(fd))
-    # Blank line before each subsequent FD for readability.
-    return "\n\n".join(blocks)
+    return "\n".join(blocks)
 
 
 # ── WORKING-STORAGE ─────────────────────────────────────────────────────────────
@@ -411,7 +409,7 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
             is_numeric = d.type.upper() in ("N", "P", "B", "U")
             needs_redefines = is_numeric and d.value is not None
             if needs_redefines:
-                full_name = (d.name + "-FULL")[:_MAX_NAME]
+                full_name = (d.name + "-FULL")[:30]
                 lines.append(f"{_A}01  {_safe_name(d.name)}.")
                 lines.append(_field_line(f"{_B}05  ", full_name, pic_str + val_clause))
                 lines.append(f"{_B}05  FILLER REDEFINES {full_name}.")
@@ -659,11 +657,14 @@ def _strip_ws_prefix(name: str) -> str:
     return name[3:] if upper.startswith("WS-") else name
 
 
+_MAX_NAME = 30   # COBOL identifier length limit
+
+
 def _safe_name(name: str) -> str:
-    """Trim a generated identifier to _MAX_NAME chars and strip any trailing '-'.
+    """Trim a generated identifier to 30 chars and strip any trailing '-'.
 
     COBOL identifiers cannot end with a hyphen — that's a compile error —
-    which can happen when the length truncation lands exactly on one.
+    which can happen when the 30-char truncation lands exactly on one.
     """
     name = name[:_MAX_NAME].rstrip("-")
     return name or "FILLER"   # never return empty; FILLER is a safe fallback
@@ -675,13 +676,13 @@ def _build_sub_name(sub_prefix: str, source_field: str,
 
     Format: ``<sub_prefix>-<source_stem>``, where source_stem is the field
     name without a leading 'WS-'.  If the combined name would exceed COBOL's
-    _MAX_NAME-char identifier limit the stem is right-truncated; trailing hyphens
+    30-char identifier limit the stem is right-truncated; trailing hyphens
     that fall on the cut point are stripped.
 
     When `used` is given, the returned name is guaranteed unique within
     that set — if truncation would collide with a name already in `used`
     (common when two long source names share a long prefix), a numeric
-    -N suffix is added (still within _MAX_NAME chars).  The chosen name is
+    -N suffix is added (still within 30 chars).  The chosen name is
     added to `used` on return.
     """
     stem = _strip_ws_prefix(source_field)
@@ -697,7 +698,7 @@ def _build_sub_name(sub_prefix: str, source_field: str,
             used.add(candidate)
         return candidate
 
-    # Collision — append -N, shrinking the base if necessary to fit _MAX_NAME chars.
+    # Collision — append -N, shrinking the base if necessary to fit 30 chars.
     for n in range(2, 1000):
         suffix = f"-{n}"
         max_base = _MAX_NAME - len(suffix)
@@ -727,7 +728,7 @@ def _resolve_subfield_names(
 
     Walks fragments in COL order so the dedup counter (-2, -3, ...) lands
     on the LATER occurrence when long names would otherwise collide after
-    _MAX_NAME-char truncation.  Returns a dict keyed by the source field name.
+    30-char truncation.  Returns a dict keyed by the source field name.
     """
     mapping: Dict[str, str] = {}
     used: set = set()
@@ -737,9 +738,32 @@ def _resolve_subfield_names(
     return mapping
 
 
+def _gen_field_map_comments(
+    layout_name: str,
+    fragments:   List[_ColFragment],
+    name_map:    Dict[str, str],
+    lookup:      Optional[Dict[str, Union[EZTField, EZTDefine]]] = None,
+) -> List[str]:
+    """Emit comment lines mapping source EZT fields to generated subfields.
+
+    Uses the pre-resolved `name_map` (source -> target) so the comment
+    block lists exactly the same names the layout below emits — no risk
+    of the comment naming one identifier and the 05-line another.
+    """
+    field_refs = [f for f in fragments if f.field]
+    if not field_refs:
+        return []
+    out = [f"      * {layout_name} MOVE-targets:"]
+    for frag in sorted(field_refs, key=lambda f: f.col):
+        sub = name_map.get(frag.field, "?")
+        fld = lookup.get(frag.field) if (lookup and frag.field) else None
+        out.append(_format_map_line(frag.field, sub, fld))
+    return out
+
+
 def _resolve_dtl_names(fields: List[str]) -> Dict[str, str]:
     """source-field -> unique WS-DTL-<...> target name, deduped across the
-    list so long names that truncate to the same _MAX_NAME chars don't collide.
+    list so long names that truncate to the same 30 chars don't collide.
     """
     mapping: Dict[str, str] = {}
     used: set = set()
@@ -795,7 +819,7 @@ def _gen_positioned_line_block(
 
     # Resolve subfield names ONCE so the comment block and the 05 lines
     # below use the same dedup'd identifiers when long source names would
-    # otherwise collide after _MAX_NAME-char truncation.
+    # otherwise collide after 30-char truncation.
     name_map = _resolve_subfield_names(sub_prefix, fragments)
 
     items: List[Tuple[str, str, str]] = []
@@ -831,7 +855,10 @@ def _gen_positioned_line_block(
     trailing = width - (cur_col - 1)
     if trailing > 0:
         items.append(("FILLER", f"PIC X({trailing})", "VALUE SPACES"))
-    return _layout_block(layout_name, items)
+    # Prepend a comment block listing the same source -> target mapping
+    # the 05 lines emit (so the LLM sees the exact names to MOVE into).
+    comments = _gen_field_map_comments(layout_name, fragments, name_map, lookup)
+    return comments + _layout_block(layout_name, items)
 
 
 def _short_suffix(kind: str, line_num: Optional[int]) -> str:
@@ -946,7 +973,7 @@ def gen_report_ws(report_name: str, content: str,
     rpt = report_name.upper()
     line_limit  = 55
     page_limit  = 60
-    print_width = _DEFAULT_PRINT_WIDTH
+    print_width = 133
 
     for raw in content.splitlines():
         tokens = raw.strip().split()
@@ -999,7 +1026,7 @@ def gen_report_ws(report_name: str, content: str,
             ctl_w = _display_width(ctl.type, ctl.length, ctl.decimals) if ctl else 10
             lines.append(_field_line(
                 f"{_A}01  ",
-                f"WS-{directives.control_field.upper()}-SAVE"[:_MAX_NAME],
+                f"WS-{directives.control_field.upper()}-SAVE"[:30],
                 f"PIC X({ctl_w}) VALUE SPACES",
             ))
 
@@ -1009,16 +1036,16 @@ def gen_report_ws(report_name: str, content: str,
             continue
         for fld_name in tokens[1:]:
             fname = fld_name.upper()
-            lines.append(_field_line(f"{_A}01  ", f"WS-{fname}-TOT"[:_MAX_NAME],
+            lines.append(_field_line(f"{_A}01  ", f"WS-{fname}-TOT"[:30],
                                      "PIC S9(12)V9(2) COMP-3 VALUE ZERO"))
-            lines.append(_field_line(f"{_A}01  ", f"WS-{fname}-TOT-D"[:_MAX_NAME],
+            lines.append(_field_line(f"{_A}01  ", f"WS-{fname}-TOT-D"[:30],
                                      "PIC Z(11)9.99"))
 
     if any(raw.strip().upper().startswith("COUNT")
            for raw in content.splitlines()):
-        lines.append(_field_line(f"{_A}01  ", f"WS-{rpt}-CNT"[:_MAX_NAME],
+        lines.append(_field_line(f"{_A}01  ", f"WS-{rpt}-CNT"[:30],
                                  "PIC S9(8) COMP-3 VALUE ZERO"))
-        lines.append(_field_line(f"{_A}01  ", f"WS-{rpt}-CNT-D"[:_MAX_NAME],
+        lines.append(_field_line(f"{_A}01  ", f"WS-{rpt}-CNT-D"[:30],
                                  "PIC Z(7)9"))
 
     return "\n".join(lines)
@@ -1039,7 +1066,7 @@ def _inject_vsam_key(file: EZTFile) -> EZTFile:
     """
     if file.org != "VSAM":
         return file
-    key_name = (file.name + "-KEY")[:_MAX_NAME]
+    key_name = (file.name + "-KEY")[:30]
     if any(f.name.upper() == key_name.upper() for f in file.fields):
         return file
 
@@ -1186,41 +1213,22 @@ def _fmt_guard(hook: Optional[CopybookHook], file_name: str) -> str:
     return template.format(file=file_name)
 
 
-class _SafeFmt(dict):
-    """str.format_map backing dict that leaves unknown placeholders intact
-    (e.g. a stray '{code}' when no abend_code_base was configured) instead
-    of raising KeyError."""
-    def __missing__(self, key: str) -> str:
-        return "{" + key + "}"
-
-
-def _hook_body(hook: CopybookHook, file_name: str, index: int = 0,
-               indent: str = "               ") -> List[str]:
+def _hook_body(hook: CopybookHook, file_name: str) -> List[str]:
     """Statements that go inside the IF guard for a hook-driven file event.
 
-    Order: each before_perform statement (with {file} and {code}
-    substituted), then the PERFORM line — either single-paragraph or THRU
-    form depending on whether perform_thru is set.
-
-    {code} resolves to abend_code_base + `index` (the file's 0-based OPEN
-    position), giving each file a distinct abend code.  When the event has
-    no abend_code_base, {code} is left untouched (surfaces as a visible
-    error rather than a wrong number).
-
-    `indent` is the leading whitespace for each emitted line; the deeper
-    default suits an IF guard, and callers nesting the body further (e.g.
-    inside an IF/ELSE like READ) pass a wider indent.
+    Order: each before_perform statement (with {file} substituted), then
+    the PERFORM line — either single-paragraph or THRU form depending on
+    whether perform_thru is set.
     """
-    subs = _SafeFmt(file=file_name)
-    if hook.abend_code_base is not None:
-        subs["code"] = hook.abend_code_base + index
     body: List[str] = []
     for stmt in hook.before_perform:
-        body.append(f"{indent}{stmt.format_map(subs)}")
+        body.append(f"               {stmt.format(file=file_name)}")
     if hook.perform_thru:
-        body.append(f"{indent}PERFORM {hook.perform} THRU {hook.perform_thru}")
+        body.append(
+            f"               PERFORM {hook.perform} THRU {hook.perform_thru}"
+        )
     else:
-        body.append(f"{indent}PERFORM {hook.perform}")
+        body.append(f"               PERFORM {hook.perform}")
     return body
 
 
@@ -1243,12 +1251,12 @@ def gen_open_close_paragraphs(
     open_hook  = hooks.get("file_open_failure")
     close_hook = hooks.get("file_close_failure")
 
-    def open_block(f: EZTFile, index: int) -> List[str]:
+    def open_block(f: EZTFile) -> List[str]:
         mode = _resolved_mode(f, file_modes)
         lines = [f"           OPEN {mode} {f.name}"]
         lines.append(f"           IF {_fmt_guard(open_hook, f.name)}")
         if open_hook:
-            lines.extend(_hook_body(open_hook, f.name, index))
+            lines.extend(_hook_body(open_hook, f.name))
         else:
             lines.append(
                 f"               DISPLAY 'ERROR OPENING {f.name} STATUS: ' "
@@ -1258,92 +1266,24 @@ def gen_open_close_paragraphs(
         lines.append("           END-IF")
         return lines
 
-    def close_block(f: EZTFile, index: int) -> List[str]:
+    def close_block(f: EZTFile) -> List[str]:
         lines = [f"           CLOSE {f.name}"]
         if close_hook:
             lines.append(f"           IF {_fmt_guard(close_hook, f.name)}")
-            lines.extend(_hook_body(close_hook, f.name, index))
+            lines.extend(_hook_body(close_hook, f.name))
             lines.append("           END-IF")
         return lines
 
     open_lines: List[str] = ["       OPEN-FILES."]
-    for i, f in enumerate(files):
-        open_lines.extend(open_block(f, i))
+    for f in files:
+        open_lines.extend(open_block(f))
     open_lines[-1] = open_lines[-1] + "."        # period on the last statement
     open_lines += ["       OPEN-FILES-EXIT.", "           EXIT."]
 
     close_lines: List[str] = ["       CLOSE-FILES."]
-    for i, f in enumerate(files):
-        close_lines.extend(close_block(f, i))
+    for f in files:
+        close_lines.extend(close_block(f))
     close_lines[-1] = close_lines[-1] + "."
     close_lines += ["       CLOSE-FILES-EXIT.", "           EXIT."]
 
     return "\n".join(open_lines + [""] + close_lines)
-
-
-def _input_files(files: List[EZTFile], file_modes: Dict[str, str]) -> List[EZTFile]:
-    """The subset of files opened INPUT — the only ones that get a READ
-    paragraph and an EOF flag (OUTPUT files are never READ)."""
-    return [f for f in files if _resolved_mode(f, file_modes) == "INPUT"]
-
-
-def gen_read_paragraphs(
-    files: List[EZTFile],
-    file_modes: Dict[str, str],
-    hooks: Dict[str, CopybookHook],
-) -> str:
-    """Emit a READ-<FILE> + READ-<FILE>-EXIT paragraph for each INPUT file.
-
-    Each paragraph READs the file, sets WS-<FILE>-EOF to 'Y' on end-of-file
-    (file status 10), and on any OTHER non-zero status runs the configured
-    file_read_failure copybook hook (abend) — mirroring OPEN/CLOSE handling.
-    Only INPUT files qualify; OUTPUT files are never READ.  Per-file abend
-    codes come from the hook's abend_code_base + the file's 0-based position
-    among the INPUT files.  Returns "" when no INPUT file exists.
-    """
-    inputs = _input_files(files, file_modes)
-    if not inputs:
-        return ""
-
-    read_hook = hooks.get("file_read_failure")
-    blocks: List[str] = []
-    for i, f in enumerate(inputs):
-        name = f.name
-        lines = [
-            f"       READ-{name}.",
-            f"           READ {name}",
-            f"           IF WS-{name}-STATUS NOT = ZEROES",
-            f"               IF WS-{name}-STATUS = 10",
-            f"                   MOVE 'Y' TO WS-{name}-EOF",
-            f"               ELSE",
-        ]
-        if read_hook:
-            # abend branch nested inside outer-IF + ELSE → 19-space indent
-            lines.extend(_hook_body(read_hook, name, i,
-                                    indent="                   "))
-        else:
-            lines.append(
-                f"                   DISPLAY 'ERROR READING {name} STATUS: ' "
-                f"WS-{name}-STATUS"
-            )
-            lines.append("                   STOP RUN")
-        lines += [
-            "               END-IF",
-            "           END-IF.",
-            f"       READ-{name}-EXIT.",
-            "           EXIT.",
-        ]
-        blocks.append("\n".join(lines))
-
-    return "\n\n".join(blocks)
-
-
-def gen_read_eof_ws(files: List[EZTFile], file_modes: Dict[str, str]) -> str:
-    """One `01 WS-<FILE>-EOF PIC X VALUE 'N'` per INPUT file — the end-of-file
-    flag the generated READ-<FILE> paragraph sets and the driver loop tests."""
-    inputs = _input_files(files, file_modes)
-    lines = [
-        f"{_A}01  {('WS-' + f.name + '-EOF'):<33} PIC X(1) VALUE 'N'."
-        for f in inputs
-    ]
-    return "\n".join(lines)
