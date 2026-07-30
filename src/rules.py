@@ -48,6 +48,7 @@ class CopybookHook:
 _DEFAULT_WHEN: dict[str, str] = {
     "file_open_failure":  "WS-{file}-STATUS NOT = ZEROES",
     "file_close_failure": "WS-{file}-STATUS NOT = ZEROES",
+    "file_read_failure":  "WS-{file}-STATUS NOT = ZEROES",
 }
 
 # Top-level keys parsed separately from the per-event hooks.
