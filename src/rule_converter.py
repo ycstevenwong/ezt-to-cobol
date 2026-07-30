@@ -245,7 +245,7 @@ def _record_layout(file: EZTFile) -> List[str]:
         pic = _pic(root.field.type, root.field.length, root.field.decimals) + _occurs(root.field.occurs)
         # If the record is wider than this lone field (e.g. a synthetic VSAM
         # key occupying the first few bytes of a no-fields file), wrap in a
-        # group with trailing FILLER so the FD record matches RECORD CONTAINS.
+        # group with trailing FILLER so the 01 record spans the full length.
         rec_len = _effective_rec_length(file)
         if rec_len > root.field.end:
             rec_name = _safe_name(file.name + "-REC")
@@ -315,10 +315,14 @@ def gen_file_status_ws(files: List[EZTFile]) -> str:
 # Full COBOL indentation required — assembler inserts this verbatim.
 
 def gen_file_section(files: List[EZTFile]) -> str:
+    # No RECORD CONTAINS clause: the 01 record layout below already fixes the
+    # record length, and omitting it means a developer swapping in a copybook
+    # record (whose length may differ) doesn't also have to keep a hand-written
+    # character count in sync.  The FD entry is terminated by a period on the
+    # FD line itself.
     blocks = []
     for f in files:
-        fd = [f"{_A}FD  {f.name}"]
-        fd.append(f"{_B}RECORD CONTAINS {_effective_rec_length(f)} CHARACTERS.")
+        fd = [f"{_A}FD  {f.name}."]
         fd += _record_layout(f)
         blocks.append("\n".join(fd))
     return "\n".join(blocks)
