@@ -786,13 +786,21 @@ def _decide_pic(e: _VarEvidence, pics: Dict[str, str]) -> Tuple[str, str]:
     return "PIC X(20)", "VALUE SPACES"        # no usable evidence
 
 
-def gen_missing_var_ws(proc_text: str, data_text: str) -> str:
+def gen_missing_var_ws(proc_text: str, data_text: str,
+                       extra_declared: Optional[set] = None) -> str:
     """Emit WS declarations for identifiers the procedure code references
     but the DATA DIVISION never declares.  Returns "" when nothing is missing.
+
+    `extra_declared` names identifiers that ARE declared but not visible in
+    `data_text` — typically items a COPY member provides (e.g. WS-ABEND-*
+    from ERRDATA).  They are treated as declared so they are never
+    auto-declared here (which would duplicate the copybook's declaration).
     """
     if not proc_text.strip():
         return ""
     declared, pics = _collect_declared(data_text)
+    if extra_declared:
+        declared |= {n.upper() for n in extra_declared}
     paragraphs = _collect_paragraph_names(proc_text)
     evidence = _gather_evidence(proc_text, declared, paragraphs, pics)
     if not evidence:
@@ -820,6 +828,46 @@ def gen_missing_var_ws(proc_text: str, data_text: str) -> str:
     return "\n".join(lines)
 
 
+def _active_copybook_events(converted: Dict[str, str]) -> set:
+    """Copybook events whose Python-generated code is present in `converted`.
+
+    Only wired events count.  Today that is file_open_failure /
+    file_close_failure, active iff the converter produced OPEN-FILES.
+    """
+    active: set = set()
+    if converted.get(_OPEN_CLOSE_KEY):
+        active.update({"file_open_failure", "file_close_failure"})
+    return active
+
+
+# MOVE target on a before_perform statement: the name after the final TO.
+_BEFORE_PERFORM_TARGET_RE = re.compile(
+    r"\bTO\s+([A-Z][A-Z0-9-]*)\s*$", re.IGNORECASE)
+
+
+def _copybook_provided_names(
+    hooks: Dict[str, CopybookHook],
+    converted: Dict[str, str],
+) -> set:
+    """Identifiers an active hook MOVEs into and whose declaration lives in
+    that hook's copy_ws copybook (e.g. WS-ABEND-* in ERRDATA).
+
+    These are declared — just not visible to the in-program DATA DIVISION
+    scanner — so gen_missing_var_ws must treat them as declared and never
+    auto-declare them (which would duplicate the copybook's version).
+    """
+    names: set = set()
+    for event in _active_copybook_events(converted):
+        hook = hooks.get(event)
+        if hook is None or not hook.copy_ws:
+            continue
+        for stmt in hook.before_perform:
+            m = _BEFORE_PERFORM_TARGET_RE.search(stmt.strip())
+            if m:
+                names.add(m.group(1).upper())
+    return names
+
+
 def _resolve_copy_lines(
     hooks: Dict[str, CopybookHook],
     converted: Dict[str, str],
@@ -831,9 +879,7 @@ def _resolve_copy_lines(
     code stays dormant.  Today the only wired events are file_open_failure
     and file_close_failure (active iff the converter produced OPEN-FILES).
     """
-    active: set = set()
-    if converted.get(_OPEN_CLOSE_KEY):
-        active.update({"file_open_failure", "file_close_failure"})
+    active = _active_copybook_events(converted)
     ws_set: set = set()
     proc_set: set = set()
     for event in active:
@@ -978,15 +1024,18 @@ def assemble(
     # DATA DIVISION never declares (PIC inferred from usage).  Runs on the
     # FINAL procedure text — after reserved-word renames and paragraph
     # stripping — so the names scanned are the names that will compile.
-    # NOTE: names declared inside COPY members (ERRDATA etc.) are invisible
-    # here; _dedupe_ws_items can't help either, so if a copybook already
-    # declares one of these the copybook version wins by being COPY'd last.
+    # Names an active copybook hook provides (WS-ABEND-* from ERRDATA etc.)
+    # are passed as extra_declared so they aren't auto-declared here — that
+    # would duplicate the copybook's own declaration.
     proc_text_all = "\n\n".join(procedure_parts)
     if proc_text_all.strip():
         data_text_all = "\n".join(
             file_control_parts + file_section_parts + ws_parts
         )
-        missing_ws = gen_missing_var_ws(proc_text_all, data_text_all)
+        missing_ws = gen_missing_var_ws(
+            proc_text_all, data_text_all,
+            extra_declared=_copybook_provided_names(hooks, converted),
+        )
         if missing_ws:
             ws_parts.append(missing_ws)
 

@@ -31,9 +31,11 @@
 # Missing event = generator falls back to inline DISPLAY / STOP RUN.
 
 abend_ws:
-  - "       01  WS-ABEND-CODE       PIC 9(05) VALUE ZEROES."
-  - "       01  WS-ABEND-MSG        PIC X(40) VALUE SPACES."
-  - "       01  WS-ABEND-STATUS     PIC X(02) VALUE SPACES."
+  # Declared in the ERRDATA copybook — do NOT redeclare inline, or the
+  # COBOL compiler rejects the duplicate 01-level items.
+  # - "       01  WS-ABEND-CODE       PIC 9(05) VALUE ZEROES."
+  # - "       01  WS-ABEND-MSG        PIC X(40) VALUE SPACES."
+  # - "       01  WS-ABEND-STATUS     PIC X(02) VALUE SPACES."
 
 file_open_failure:
   copy_ws:        ERRDATA
