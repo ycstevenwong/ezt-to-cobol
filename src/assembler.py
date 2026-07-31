@@ -1115,11 +1115,15 @@ def assemble(
 #
 # Shop convention: certain keywords always start in a fixed column so a data
 # item's PIC/VALUE and a statement's TO/THRU line up vertically for reading.
-# Targets are 1-indexed columns:
+# Targets are 1-indexed columns, chosen per DIVISION:
 #
-#   THRU → 40, TO → 42   (PROCEDURE DIVISION only — PERFORM ... THRU,
-#                         MOVE/ADD ... TO.  ASSIGN TO / GO TO are excluded.)
+#   TO → 42, IS → 42     (ENVIRONMENT / FILE-CONTROL — the SELECT clauses:
+#                         ASSIGN TO, ORGANIZATION IS, ACCESS MODE IS,
+#                         FILE STATUS IS, RECORD KEY IS.)
 #   PIC  → 45, VALUE → 60 (DATA DIVISION data-item lines.)
+#   THRU → 40, TO → 42   (PROCEDURE DIVISION — PERFORM ... THRU,
+#                         MOVE/ADD ... TO.  ASSIGN TO / GO TO are excluded
+#                         here — those are not MOVE targets.)
 #
 # For each keyword we left-pad with spaces so it starts on its column.  When
 # the text before it already reaches the column (no room for even one
@@ -1128,21 +1132,23 @@ def assemble(
 # (a data entry / statement may span lines), never a truncated identifier.
 # Any resulting line past column 72 is folded afterwards by _enforce_col_limit.
 
-_ALIGN_PROC = (("THRU", 40), ("TO", 42))       # PROCEDURE DIVISION keywords
+_ALIGN_ENV  = (("TO", 42), ("IS", 42))         # ENVIRONMENT / FILE-CONTROL
 _ALIGN_DATA = (("PIC", 45), ("VALUE", 60))     # DATA DIVISION keywords
+_ALIGN_PROC = (("THRU", 40), ("TO", 42))       # PROCEDURE DIVISION keywords
 
-# TO preceded by one of these is NOT a MOVE/ADD target — leave it alone.
+# In PROCEDURE, a TO preceded by one of these is NOT a MOVE/ADD target — leave
+# it alone.  (In FILE-CONTROL we DO align ASSIGN TO, so this is proc-only.)
 _TO_SKIP_PREV = {"GO", "ASSIGN"}
 
 
-def _find_kw_idx(masked: str, kw: str) -> int:
+def _find_kw_idx(masked: str, kw: str, skip_prev: bool = False) -> int:
     """Index of the first `kw` token in `masked` (literals already blanked),
     matched only as a whitespace-delimited word so it never fires inside a
     hyphenated name (MOVE-TO-X) or a longer word (INTO / PICTURE).  Returns
-    -1 if absent.  For TO, an ASSIGN TO / GO TO occurrence is skipped."""
+    -1 if absent.  When `skip_prev`, a TO after ASSIGN / GO is skipped."""
     for m in re.finditer(r"(?<=\s)" + kw + r"(?=\s|$)", masked):
         idx = m.start()
-        if kw == "TO":
+        if kw == "TO" and skip_prev:
             before = masked[:idx].rstrip().rsplit(None, 1)
             if before and before[-1].upper() in _TO_SKIP_PREV:
                 continue
@@ -1150,13 +1156,14 @@ def _find_kw_idx(masked: str, kw: str) -> int:
     return -1
 
 
-def _align_one_line(line: str, targets: Tuple[Tuple[str, int], ...]) -> List[str]:
+def _align_one_line(line: str, targets: Tuple[Tuple[str, int], ...],
+                    skip_to_prev: bool = False) -> List[str]:
     """Align each (keyword, col) on `line`, returning one or more physical
     lines (extra lines appear only when a keyword had to move down)."""
     lines = [line.rstrip()]
     for kw, col in targets:
         tail = lines[-1]                       # the keyword lives on the tail
-        idx = _find_kw_idx(_blank_literals(tail), kw)
+        idx = _find_kw_idx(_blank_literals(tail), kw, skip_prev=skip_to_prev)
         if idx < 0:
             continue
         prefix = tail[:idx].rstrip()
@@ -1171,16 +1178,24 @@ def _align_one_line(line: str, targets: Tuple[Tuple[str, int], ...]) -> List[str
 
 
 def align_keywords(cobol: str) -> str:
-    """Snap PIC/VALUE (DATA) and TO/THRU (PROCEDURE) to their shop columns."""
+    """Snap TO/IS (FILE-CONTROL), PIC/VALUE (DATA) and TO/THRU (PROCEDURE) to
+    their shop columns, per division."""
     out: List[str] = []
-    in_proc = False
+    div = "env"                                # ENVIRONMENT/IDENTIFICATION first
     for line in cobol.splitlines():
-        if re.match(r"\s*PROCEDURE\s+DIVISION", line, re.IGNORECASE):
-            in_proc = True
+        if re.match(r"\s*DATA\s+DIVISION", line, re.IGNORECASE):
+            div = "data"
+        elif re.match(r"\s*PROCEDURE\s+DIVISION", line, re.IGNORECASE):
+            div = "proc"
         if not line.strip() or _is_proc_comment(line):
             out.append(line)
             continue
-        out.extend(_align_one_line(line, _ALIGN_PROC if in_proc else _ALIGN_DATA))
+        if div == "proc":
+            out.extend(_align_one_line(line, _ALIGN_PROC, skip_to_prev=True))
+        elif div == "data":
+            out.extend(_align_one_line(line, _ALIGN_DATA))
+        else:                                  # env (only FILE-CONTROL has TO/IS)
+            out.extend(_align_one_line(line, _ALIGN_ENV))
     return "\n".join(out)
 
 
