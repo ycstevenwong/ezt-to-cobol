@@ -68,21 +68,6 @@ file_close_failure:
     - "MOVE 'INVALID {file} FILE CLOSE' TO WS-ABEND-MSG"
     - "MOVE WS-{file}-STATUS TO WS-ABEND-STATUS"
 
-# Non-EOF READ failure.  The generated READ-<FILE> paragraph treats file
-# status 10 as end-of-file (sets WS-<FILE>-EOF); any OTHER non-zero status
-# runs this hook.  Only INPUT files get a READ paragraph.
-file_read_failure:
-  copy_ws:         ERRDATA
-  copy_procedure:  ERRRTN
-  perform:         FILE-ERROR-RTN
-  perform_thru:    FILE-ERROR-EXIT
-  when:            "WS-{file}-STATUS NOT = ZEROES"
-  abend_code_base: 20001
-  before_perform:
-    - "MOVE {code} TO WS-ABEND-CODE"
-    - "MOVE 'INVALID {file} FILE READ' TO WS-ABEND-MSG"
-    - "MOVE WS-{file}-STATUS TO WS-ABEND-STATUS"
-
 vsam_invalid_key:
   copy_ws:        VSAMDATA
   copy_procedure: VSAMRTN
