@@ -4,10 +4,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from src.parser import EZTSection, SectionType
-from src.rule_converter import (
-    gen_report_ws, parse_job_file_modes, _resolved_mode, _inject_vsam_key,
-    _hook_body,
-)
+from src.rule_converter import gen_report_ws
 from src.rules import CopybookHook, load_abend_ws, load_copybooks
 from src.structured_parser import parse_preamble
 
@@ -863,96 +860,6 @@ def _copybook_provided_names(
     return names
 
 
-# ── Prompt-free READ integration ─────────────────────────────────────────────
-#
-# The prompt has the LLM write its own file read (READ <FILE> ... AT END ...
-# END-READ).  To give every read the shop-standard error handling WITHOUT a
-# prompt change, we rewrite that inline read into a PERFORM of a generated
-# READ-<FILE> paragraph — but ONLY for the common, unambiguous shape:
-#
-#       READ <FILE> [NEXT] [RECORD] [INTO x]
-#           AT END  <... MOVE val TO flag ...>
-#       END-READ
-#
-# with NO "NOT AT END" branch (whose statements a bare PERFORM would drop).
-# The generated paragraph reuses the LLM's OWN EOF flag so its loop keeps
-# working: on file status 10 it sets that flag; on any other non-zero status
-# it runs the file_read_failure hook.  A read we cannot match confidently
-# (has NOT AT END, no AT END flag, or no END-READ terminator) is left as-is.
-
-def _read_block_re(file_name: str):
-    """Match a single `READ <file> ... END-READ` block (may span lines)."""
-    return re.compile(
-        r"^([ \t]*)READ\s+" + re.escape(file_name)
-        + r"\b(?P<body>.*?)\bEND-READ\b\.?",
-        re.IGNORECASE | re.DOTALL | re.MULTILINE)
-
-
-def _gen_read_paragraph(file_name: str, flag: str, eofval: str,
-                        read_hook: Optional[CopybookHook], index: int) -> str:
-    """Build a READ-<FILE>/-EXIT paragraph that sets the LLM's own EOF `flag`
-    to `eofval` on end-of-file (status 10) and abends on any other error."""
-    lines = [
-        f"       READ-{file_name}.",
-        f"           READ {file_name}",
-        f"           IF WS-{file_name}-STATUS NOT = ZEROES",
-        f"               IF WS-{file_name}-STATUS = 10",
-        f"                   MOVE {eofval} TO {flag}",
-        f"               ELSE",
-    ]
-    if read_hook:
-        lines.extend(_hook_body(read_hook, file_name, index,
-                                indent="                   "))
-    else:
-        lines.append(
-            f"                   DISPLAY 'ERROR READING {file_name} STATUS: ' "
-            f"WS-{file_name}-STATUS"
-        )
-        lines.append("                   STOP RUN")
-    lines += [
-        "               END-IF",
-        "           END-IF.",
-        f"       READ-{file_name}-EXIT.",
-        "           EXIT.",
-    ]
-    return "\n".join(lines)
-
-
-def _integrate_reads(proc_text: str, input_files: List[str],
-                     hooks: Dict[str, CopybookHook]) -> Tuple[str, str]:
-    """Rewrite the LLM's inline READ of each INPUT file into a PERFORM of a
-    generated READ-<FILE> paragraph.  Returns (rewritten_proc, paragraphs)."""
-    read_hook = hooks.get("file_read_failure")
-    paragraphs: List[str] = []
-    new_proc = proc_text
-    for i, fn in enumerate(input_files):
-        found: Dict[str, str] = {}
-
-        def repl(m, _found=found):
-            body = m.group("body")
-            if re.search(r"\bNOT\s+AT\s+END\b", body, re.IGNORECASE):
-                return m.group(0)          # keep — a bare PERFORM loses this
-            at = re.search(r"\bAT\s+END\b(.*)$", body, re.IGNORECASE | re.DOTALL)
-            if not at:
-                return m.group(0)
-            mv = re.search(r"\bMOVE\s+(\S+)\s+TO\s+([A-Z][A-Z0-9-]*)",
-                           at.group(1), re.IGNORECASE)
-            if not mv:
-                return m.group(0)
-            _found.setdefault("eofval", mv.group(1))
-            _found.setdefault("flag", mv.group(2).upper())
-            return f"{m.group(1)}PERFORM READ-{fn} THRU READ-{fn}-EXIT"
-
-        candidate = _read_block_re(fn).sub(repl, new_proc)
-        if "flag" not in found:
-            continue                       # nothing matched for this file
-        new_proc = candidate
-        paragraphs.append(
-            _gen_read_paragraph(fn, found["flag"], found["eofval"], read_hook, i)
-        )
-    return new_proc, "\n\n".join(paragraphs)
-
-
 def _resolve_copy_lines(
     hooks: Dict[str, CopybookHook],
     converted: Dict[str, str],
@@ -1046,16 +953,6 @@ def assemble(
     # (which PERFORMs them by name) appears first.
     open_close_text = (converted.get(_OPEN_CLOSE_KEY) or "").strip("\n")
 
-    # INPUT file names, for prompt-free READ integration (rewriting the LLM's
-    # inline READ into PERFORM READ-<FILE>).  OUTPUT files are never READ.
-    hooks = load_copybooks()
-    _job = next((s for s in sections if s.type == SectionType.JOB), None)
-    _modes = parse_job_file_modes(_job.content) if _job else {}
-    _files = [_inject_vsam_key(f) for f in preamble.files] if preamble else []
-    input_file_names = [f.name for f in _files
-                        if _resolved_mode(f, _modes) == "INPUT"]
-    read_paras_text = ""
-
     # Single combined JOB+REPORT LLM result — extract WS additions and
     # the unified PROCEDURE DIVISION exactly once.
     combined = (converted.get("logic:combined") or "").strip("\n")
@@ -1077,14 +974,6 @@ def assemble(
         # it not to.  PERFORM references in MAIN-PROCESS stay intact.
         if open_close_text:
             clean_proc = _strip_paragraphs(clean_proc, _PY_OWNED_PARAS)
-        # Prompt-free READ integration: rewrite the LLM's inline
-        # READ <FILE> ... AT END ... END-READ into PERFORM READ-<FILE> and
-        # generate the matching paragraph(s).  Runs before period/alignment
-        # passes so the rewritten PERFORM is a normal single statement.
-        if input_file_names:
-            clean_proc, read_paras_text = _integrate_reads(
-                clean_proc, input_file_names, hooks
-            )
         # Rename any paragraph whose bare name collides with a COBOL
         # reserved word (INITIAL, TERMINATE, etc.) — both definitions
         # and PERFORM references are rewritten in lockstep.
@@ -1101,20 +990,17 @@ def assemble(
         if clean_proc:
             procedure_parts.append(clean_proc)
 
-    # Append the Python-generated OPEN-FILES / CLOSE-FILES and any READ-<FILE>
-    # paragraphs (from prompt-free integration) after the LLM's logic.  Order
-    # doesn't matter for COBOL paragraph resolution, but placing them after
-    # MAIN-PROCESS keeps the program's narrative flow.
+    # Append the Python-generated OPEN-FILES / CLOSE-FILES after the LLM's
+    # logic.  Order doesn't matter for COBOL paragraph resolution, but
+    # placing them after MAIN-PROCESS keeps the program's narrative flow.
     if open_close_text:
         procedure_parts.append(open_close_text)
-    if read_paras_text:
-        procedure_parts.append(read_paras_text)
 
     # Resolve which copybook COPY lines to emit per division.  Only events
     # Python actually generated code for contribute to the dedup set; events
     # configured in copybooks.yaml whose code Python doesn't yet emit are
-    # ignored here (the YAML stays declarative for later phases).  (`hooks`
-    # was loaded above for READ integration.)
+    # ignored here (the YAML stays declarative for later phases).
+    hooks = load_copybooks()
     ws_copies, proc_copies = _resolve_copy_lines(hooks, converted)
 
     # abend_ws — global WS items referenced by before_perform MOVEs
