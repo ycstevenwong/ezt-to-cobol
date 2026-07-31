@@ -26,7 +26,15 @@ class CopybookHook:
     perform_thru enables the  PERFORM <perform> THRU <perform_thru>  form.
     before_perform is an ordered list of statements emitted inside the IF
     guard, BEFORE the PERFORM line — typical use is populating abend
-    variables (MOVE 10001 TO WS-ABEND-CODE, etc.).
+    variables (MOVE {code} TO WS-ABEND-CODE, etc.).  Two placeholders are
+    substituted per file: {file} -> the FD name, and {code} -> a per-file
+    abend code (abend_code_base + the file's 0-based OPEN position).
+
+    abend_code_base is the starting abend code for this event.  With N
+    files, the k-th file (0-based, OPEN order) gets base + k.  Give each
+    event its own base with enough spacing that the ranges don't overlap
+    (e.g. open 10001, close 10501).  None when the event's before_perform
+    doesn't use {code}.
     """
     copy_ws: str | None
     copy_procedure: str | None
@@ -34,11 +42,13 @@ class CopybookHook:
     perform_thru: str | None
     before_perform: tuple[str, ...]
     when: str | None
+    abend_code_base: int | None
 
 
 _DEFAULT_WHEN: dict[str, str] = {
     "file_open_failure":  "WS-{file}-STATUS NOT = ZEROES",
     "file_close_failure": "WS-{file}-STATUS NOT = ZEROES",
+    "file_read_failure":  "WS-{file}-STATUS NOT = ZEROES",
 }
 
 # Top-level keys parsed separately from the per-event hooks.
@@ -57,6 +67,15 @@ def _opt_str_list(cfg: dict, key: str, *, event: str) -> tuple[str, ...]:
     if not isinstance(v, list):
         raise ValueError(f"copybooks.yaml: {event!r}: {key!r} must be a list")
     return tuple(str(s) for s in v)
+
+
+def _opt_int(cfg: dict, key: str, *, event: str) -> int | None:
+    v = cfg.get(key)
+    if v is None:
+        return None
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise ValueError(f"copybooks.yaml: {event!r}: {key!r} must be an integer")
+    return v
 
 
 def load_copybooks() -> dict[str, CopybookHook]:
@@ -84,6 +103,7 @@ def load_copybooks() -> dict[str, CopybookHook]:
             perform_thru=_opt_str(cfg, "perform_thru"),
             before_perform=_opt_str_list(cfg, "before_perform", event=event),
             when=cfg.get("when", _DEFAULT_WHEN.get(event)),
+            abend_code_base=_opt_int(cfg, "abend_code_base", event=event),
         )
     return hooks
 

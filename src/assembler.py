@@ -8,16 +8,20 @@ from src.rule_converter import gen_report_ws
 from src.rules import CopybookHook, load_abend_ws, load_copybooks
 from src.structured_parser import parse_preamble
 
-# Synthetic key the converter stashes Python-generated OPEN/CLOSE paragraphs
-# under.  Duplicated here (not imported from src.converter) to keep the
-# assembler free of import cycles — converter already imports assembler.
-_OPEN_CLOSE_KEY = "open_close:paragraphs"
+# Synthetic keys the converter stashes Python-generated code under.
+# Duplicated here (not imported from src.converter) to keep the assembler
+# free of import cycles — converter already imports assembler.
+_OPEN_CLOSE_KEY  = "open_close:paragraphs"
+_READ_PARAS_KEY  = "read:paragraphs"
+_READ_EOF_WS_KEY = "read_eof:ws"
 
 # Events Python deterministically generates code for today.  Used to decide
 # which copybooks should get a COPY line emitted into the final program;
 # events listed in copybooks.yaml whose code Python doesn't yet emit are
 # left dormant (the YAML stays declarative for the next phase).
-_PY_GENERATED_EVENTS = ("file_open_failure", "file_close_failure")
+_PY_GENERATED_EVENTS = (
+    "file_open_failure", "file_close_failure", "file_read_failure",
+)
 
 _IDENT_DIV = """\
        IDENTIFICATION DIVISION.
@@ -465,6 +469,16 @@ def _strip_paragraphs(cobol: str, names: Tuple[str, ...]) -> str:
     return "\n".join(out)
 
 
+def _para_def_names(cobol: str) -> Tuple[str, ...]:
+    """Every Area-A paragraph-definition name in `cobol` (headers only).
+
+    Used to learn the dynamic READ-<FILE> / READ-<FILE>-EXIT names Python
+    generated so a duplicate the LLM emits can be stripped — these names
+    are file-derived and can't be listed statically like _PY_OWNED_PARAS.
+    """
+    return tuple(m.group(1).upper() for m in _PARA_DEF_RE.finditer(cobol))
+
+
 # ── Auto-declaration of missing variables ────────────────────────────────────
 #
 # Even with the identifier allow-list in the prompt, the LLM sometimes
@@ -786,38 +800,80 @@ def _decide_pic(e: _VarEvidence, pics: Dict[str, str]) -> Tuple[str, str]:
     return "PIC X(20)", "VALUE SPACES"        # no usable evidence
 
 
-def gen_missing_var_ws(proc_text: str, data_text: str) -> str:
+def gen_missing_var_ws(proc_text: str, data_text: str,
+                       extra_declared: Optional[set] = None) -> str:
     """Emit WS declarations for identifiers the procedure code references
     but the DATA DIVISION never declares.  Returns "" when nothing is missing.
+
+    `extra_declared` names identifiers that ARE declared but not visible in
+    `data_text` — typically items a COPY member provides (e.g. WS-ABEND-*
+    from ERRDATA).  They are treated as declared so they are never
+    auto-declared here (which would duplicate the copybook's declaration).
     """
     if not proc_text.strip():
         return ""
     declared, pics = _collect_declared(data_text)
+    if extra_declared:
+        declared |= {n.upper() for n in extra_declared}
     paragraphs = _collect_paragraph_names(proc_text)
     evidence = _gather_evidence(proc_text, declared, paragraphs, pics)
     if not evidence:
         return ""
 
-    lines: List[str] = [
-        "      * AUTO-DECLARED: the following identifiers are referenced by",
-        "      * the generated logic but were missing from the DATA DIVISION.",
-        "      * PICs are inferred from usage -- review before compiling.",
-    ]
-    emitted = False
+    lines: List[str] = []
     for name in sorted(evidence):
         e = evidence[name]
         if e.subscripted:
-            lines.append(f"      * {name} is referenced with a subscript --")
-            lines.append("      * OCCURS size unknown; declare it manually.")
+            # Can't size a subscripted item (OCCURS count unknown) — skip it;
+            # it must be declared manually.
             continue
         pic, value = _decide_pic(e, pics)
         suffix = f"{pic} {value}".strip()
         lines.append(f"       01  {name:<33} {suffix}.")
-        emitted = True
 
-    if not emitted and len(lines) <= 3:
-        return ""
     return "\n".join(lines)
+
+
+def _active_copybook_events(converted: Dict[str, str]) -> set:
+    """Copybook events whose Python-generated code is present in `converted`.
+
+    Only wired events count.  Today that is file_open_failure /
+    file_close_failure, active iff the converter produced OPEN-FILES.
+    """
+    active: set = set()
+    if converted.get(_OPEN_CLOSE_KEY):
+        active.update({"file_open_failure", "file_close_failure"})
+    if converted.get(_READ_PARAS_KEY):
+        active.add("file_read_failure")
+    return active
+
+
+# MOVE target on a before_perform statement: the name after the final TO.
+_BEFORE_PERFORM_TARGET_RE = re.compile(
+    r"\bTO\s+([A-Z][A-Z0-9-]*)\s*$", re.IGNORECASE)
+
+
+def _copybook_provided_names(
+    hooks: Dict[str, CopybookHook],
+    converted: Dict[str, str],
+) -> set:
+    """Identifiers an active hook MOVEs into and whose declaration lives in
+    that hook's copy_ws copybook (e.g. WS-ABEND-* in ERRDATA).
+
+    These are declared — just not visible to the in-program DATA DIVISION
+    scanner — so gen_missing_var_ws must treat them as declared and never
+    auto-declare them (which would duplicate the copybook's version).
+    """
+    names: set = set()
+    for event in _active_copybook_events(converted):
+        hook = hooks.get(event)
+        if hook is None or not hook.copy_ws:
+            continue
+        for stmt in hook.before_perform:
+            m = _BEFORE_PERFORM_TARGET_RE.search(stmt.strip())
+            if m:
+                names.add(m.group(1).upper())
+    return names
 
 
 def _resolve_copy_lines(
@@ -831,9 +887,7 @@ def _resolve_copy_lines(
     code stays dormant.  Today the only wired events are file_open_failure
     and file_close_failure (active iff the converter produced OPEN-FILES).
     """
-    active: set = set()
-    if converted.get(_OPEN_CLOSE_KEY):
-        active.update({"file_open_failure", "file_close_failure"})
+    active = _active_copybook_events(converted)
     ws_set: set = set()
     proc_set: set = set()
     for event in active:
@@ -915,6 +969,14 @@ def assemble(
     # (which PERFORMs them by name) appears first.
     open_close_text = (converted.get(_OPEN_CLOSE_KEY) or "").strip("\n")
 
+    # Python-generated READ-<FILE> paragraphs + their WS-<FILE>-EOF flags
+    # (one per INPUT file).  Paragraphs are spliced into PROCEDURE alongside
+    # OPEN/CLOSE; the EOF flags go straight into WORKING-STORAGE.
+    read_paras_text = (converted.get(_READ_PARAS_KEY) or "").strip("\n")
+    read_eof_ws = (converted.get(_READ_EOF_WS_KEY) or "").strip("\n")
+    if read_eof_ws:
+        ws_parts.append(read_eof_ws)
+
     # Single combined JOB+REPORT LLM result — extract WS additions and
     # the unified PROCEDURE DIVISION exactly once.
     combined = (converted.get("logic:combined") or "").strip("\n")
@@ -931,11 +993,16 @@ def assemble(
         )
         clean_proc = proc[proc_m.end():].strip("\n") if proc_m else proc.strip("\n")
         clean_proc = _strip_data_decls(clean_proc)
-        # Defensive: if Python already emitted OPEN-FILES / CLOSE-FILES,
-        # drop any duplicate the LLM produced despite the prompt telling
-        # it not to.  PERFORM references in MAIN-PROCESS stay intact.
+        # Defensive: if Python already emitted OPEN-FILES / CLOSE-FILES /
+        # READ-<FILE>, drop any duplicate the LLM produced.  PERFORM
+        # references stay intact (they don't match _PARA_DEF_RE).  READ-<FILE>
+        # names are file-derived, so read them off the generated text.
         if open_close_text:
             clean_proc = _strip_paragraphs(clean_proc, _PY_OWNED_PARAS)
+        if read_paras_text:
+            clean_proc = _strip_paragraphs(
+                clean_proc, _para_def_names(read_paras_text)
+            )
         # Rename any paragraph whose bare name collides with a COBOL
         # reserved word (INITIAL, TERMINATE, etc.) — both definitions
         # and PERFORM references are rewritten in lockstep.
@@ -952,11 +1019,14 @@ def assemble(
         if clean_proc:
             procedure_parts.append(clean_proc)
 
-    # Append the Python-generated OPEN-FILES / CLOSE-FILES after the LLM's
-    # logic.  Order doesn't matter for COBOL paragraph resolution, but
-    # placing them after MAIN-PROCESS keeps the program's narrative flow.
+    # Append the Python-generated OPEN-FILES / CLOSE-FILES and READ-<FILE>
+    # paragraphs after the LLM's logic.  Order doesn't matter for COBOL
+    # paragraph resolution, but placing them after MAIN-PROCESS keeps the
+    # program's narrative flow.
     if open_close_text:
         procedure_parts.append(open_close_text)
+    if read_paras_text:
+        procedure_parts.append(read_paras_text)
 
     # Resolve which copybook COPY lines to emit per division.  Only events
     # Python actually generated code for contribute to the dedup set; events
@@ -969,7 +1039,7 @@ def assemble(
     # (WS-ABEND-CODE / WS-ABEND-MSG / WS-ABEND-STATUS by default).  Emitted
     # only when at least one wired event fires; comment items out of YAML
     # if your copybook already declares them.
-    if open_close_text:
+    if open_close_text or read_paras_text:
         abend_ws_items = load_abend_ws()
         if abend_ws_items:
             ws_parts.append("\n".join(abend_ws_items))
@@ -978,15 +1048,18 @@ def assemble(
     # DATA DIVISION never declares (PIC inferred from usage).  Runs on the
     # FINAL procedure text — after reserved-word renames and paragraph
     # stripping — so the names scanned are the names that will compile.
-    # NOTE: names declared inside COPY members (ERRDATA etc.) are invisible
-    # here; _dedupe_ws_items can't help either, so if a copybook already
-    # declares one of these the copybook version wins by being COPY'd last.
+    # Names an active copybook hook provides (WS-ABEND-* from ERRDATA etc.)
+    # are passed as extra_declared so they aren't auto-declared here — that
+    # would duplicate the copybook's own declaration.
     proc_text_all = "\n\n".join(procedure_parts)
     if proc_text_all.strip():
         data_text_all = "\n".join(
             file_control_parts + file_section_parts + ws_parts
         )
-        missing_ws = gen_missing_var_ws(proc_text_all, data_text_all)
+        missing_ws = gen_missing_var_ws(
+            proc_text_all, data_text_all,
+            extra_declared=_copybook_provided_names(hooks, converted),
+        )
         if missing_ws:
             ws_parts.append(missing_ws)
 
@@ -1034,7 +1107,81 @@ def assemble(
     procedure_div = "       PROCEDURE DIVISION.\n" + proc_body
 
     cobol = "\n\n".join([ident, env_div, data_div, procedure_div]) + "\n"
+    cobol = align_keywords(cobol)          # snap PIC/VALUE/TO/THRU to columns
     return _enforce_col_limit(cobol)
+
+
+# ── Keyword column alignment ─────────────────────────────────────────────────
+#
+# Shop convention: certain keywords always start in a fixed column so a data
+# item's PIC/VALUE and a statement's TO/THRU line up vertically for reading.
+# Targets are 1-indexed columns:
+#
+#   THRU → 40, TO → 42   (PROCEDURE DIVISION only — PERFORM ... THRU,
+#                         MOVE/ADD ... TO.  ASSIGN TO / GO TO are excluded.)
+#   PIC  → 45, VALUE → 60 (DATA DIVISION data-item lines.)
+#
+# For each keyword we left-pad with spaces so it starts on its column.  When
+# the text before it already reaches the column (no room for even one
+# separating space), the keyword and everything after it move to a fresh
+# continuation line that begins at the target column — always valid COBOL
+# (a data entry / statement may span lines), never a truncated identifier.
+# Any resulting line past column 72 is folded afterwards by _enforce_col_limit.
+
+_ALIGN_PROC = (("THRU", 40), ("TO", 42))       # PROCEDURE DIVISION keywords
+_ALIGN_DATA = (("PIC", 45), ("VALUE", 60))     # DATA DIVISION keywords
+
+# TO preceded by one of these is NOT a MOVE/ADD target — leave it alone.
+_TO_SKIP_PREV = {"GO", "ASSIGN"}
+
+
+def _find_kw_idx(masked: str, kw: str) -> int:
+    """Index of the first `kw` token in `masked` (literals already blanked),
+    matched only as a whitespace-delimited word so it never fires inside a
+    hyphenated name (MOVE-TO-X) or a longer word (INTO / PICTURE).  Returns
+    -1 if absent.  For TO, an ASSIGN TO / GO TO occurrence is skipped."""
+    for m in re.finditer(r"(?<=\s)" + kw + r"(?=\s|$)", masked):
+        idx = m.start()
+        if kw == "TO":
+            before = masked[:idx].rstrip().rsplit(None, 1)
+            if before and before[-1].upper() in _TO_SKIP_PREV:
+                continue
+        return idx
+    return -1
+
+
+def _align_one_line(line: str, targets: Tuple[Tuple[str, int], ...]) -> List[str]:
+    """Align each (keyword, col) on `line`, returning one or more physical
+    lines (extra lines appear only when a keyword had to move down)."""
+    lines = [line.rstrip()]
+    for kw, col in targets:
+        tail = lines[-1]                       # the keyword lives on the tail
+        idx = _find_kw_idx(_blank_literals(tail), kw)
+        if idx < 0:
+            continue
+        prefix = tail[:idx].rstrip()
+        rest = tail[idx:]                      # keyword + everything after it
+        target0 = col - 1                      # 0-based start column
+        if len(prefix) <= target0 - 1:         # room for ≥1 separating space
+            lines[-1] = prefix + " " * (target0 - len(prefix)) + rest
+        else:                                   # no room → move down a line
+            lines[-1] = prefix
+            lines.append(" " * target0 + rest)
+    return lines
+
+
+def align_keywords(cobol: str) -> str:
+    """Snap PIC/VALUE (DATA) and TO/THRU (PROCEDURE) to their shop columns."""
+    out: List[str] = []
+    in_proc = False
+    for line in cobol.splitlines():
+        if re.match(r"\s*PROCEDURE\s+DIVISION", line, re.IGNORECASE):
+            in_proc = True
+        if not line.strip() or _is_proc_comment(line):
+            out.append(line)
+            continue
+        out.extend(_align_one_line(line, _ALIGN_PROC if in_proc else _ALIGN_DATA))
+    return "\n".join(out)
 
 
 # ── Column-72 enforcement ────────────────────────────────────────────────────

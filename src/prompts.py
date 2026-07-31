@@ -88,7 +88,10 @@ COBOL identifiers (the compiler rejects them).
 2. Fixed format: paragraph names at col 8 (Area A); statements at col 12
    (Area B); '*' in col 7 for comments; nothing past col 72.
 3. COBOL-85 syntax.  Prefix WS items with WS-.  Prefix FD sub-fields
-   with a short file abbreviation.
+   with a short file abbreviation.  Every data-name and paragraph name
+   MUST be 25 characters or fewer (COBOL's own cap is 30; this project
+   caps at 25 so shop-standard suffixes still fit).  Shorten or
+   abbreviate any name that would exceed 25 characters.
 4. PIC length MUST fit VALUE.  Count every char between the quotes
    (parens, hyphens, slashes, spaces all count; the quotes do not):
        VALUE '(CC1164)'  -> 8 chars  -> PIC X(08)
@@ -155,6 +158,7 @@ WS rules:
   • 01 at col 8 (EXACTLY 7 leading spaces); 05/10/... at col 12
     (EXACTLY 11 leading spaces).  Never start a level number at col 1.
   • Never declare the same 01 name twice.
+  • Every data-name is 25 characters or fewer (see system prompt rule #3).
   • PIC must fit VALUE (see system prompt rule #4).
 
 ━━ TRANSLATE ONLY WHAT'S IN THE SOURCE ━━

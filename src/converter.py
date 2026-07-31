@@ -10,6 +10,8 @@ from src.rule_converter import (
     convert_file_def,
     convert_field_def,
     gen_open_close_paragraphs,
+    gen_read_paragraphs,
+    gen_read_eof_ws,
     gen_report_ws,
     parse_job_file_modes,
     _inject_vsam_key,
@@ -34,6 +36,14 @@ COMBINED_LOGIC_KEY = "logic:combined"
 # The assembler appends this text to procedure_parts and skips the LLM's
 # version (the prompt tells the LLM these are pre-generated).
 OPEN_CLOSE_KEY = "open_close:paragraphs"
+
+# Synthetic keys for the Python-generated READ-<FILE> paragraphs and the
+# matching WS-<FILE>-EOF flags (one per INPUT file).  The assembler splices
+# the paragraphs into PROCEDURE and the flags into WORKING-STORAGE.
+# NOTE (step 1): no prompt guidance yet, so the LLM still writes its own
+# READ loop; the generated READ-<FILE> paragraphs sit unused for now.
+READ_PARAS_KEY  = "read:paragraphs"
+READ_EOF_WS_KEY = "read_eof:ws"
 
 
 def _report_ws_key(report_name: str) -> str:
@@ -231,6 +241,24 @@ def convert_all(
             context_chunks.append(
                 "=== OPEN-FILES / CLOSE-FILES — ALREADY GENERATED, "
                 "DO NOT REDECLARE ===\n" + open_close
+            )
+
+        # READ-<FILE> paragraphs + WS-<FILE>-EOF flags, one per INPUT file.
+        read_paras = gen_read_paragraphs(files, file_modes, hooks)
+        if read_paras:
+            if verbose:
+                print("  → [read-paragraphs] (rule-based)", flush=True)
+            results[READ_PARAS_KEY] = read_paras
+            context_chunks.append(
+                "=== READ-<FILE> PARAGRAPHS — ALREADY GENERATED, "
+                "DO NOT REDECLARE ===\n" + read_paras
+            )
+        read_eof_ws = gen_read_eof_ws(files, file_modes)
+        if read_eof_ws:
+            results[READ_EOF_WS_KEY] = read_eof_ws
+            context_chunks.append(
+                "=== EOF FLAGS (WS-<FILE>-EOF) — ALREADY IN DATA DIVISION, "
+                "DO NOT REDECLARE ===\n" + read_eof_ws
             )
 
     for section in sections:
