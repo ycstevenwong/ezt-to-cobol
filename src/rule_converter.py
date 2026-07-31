@@ -1210,7 +1210,7 @@ def _resolved_mode(f: EZTFile, file_modes: Dict[str, str]) -> str:
 
 def _fmt_guard(hook: Optional[CopybookHook], file_name: str) -> str:
     template = (hook.when if hook and hook.when else "WS-{file}-STATUS NOT = '00'")
-    return template.format(file=file_name)
+    return template.replace("{file}", file_name)
 
 
 def _hook_body(hook: CopybookHook, file_name: str) -> List[str]:
@@ -1219,10 +1219,14 @@ def _hook_body(hook: CopybookHook, file_name: str) -> List[str]:
     Order: each before_perform statement (with {file} substituted), then
     the PERFORM line — either single-paragraph or THRU form depending on
     whether perform_thru is set.
+
+    Substitution is a plain str.replace of the {file} placeholder, NOT
+    str.format — a copybook's abend message may contain other braces (a
+    literal '{'/'}' or an unrelated {token}) that str.format would reject.
     """
     body: List[str] = []
     for stmt in hook.before_perform:
-        body.append(f"               {stmt.format(file=file_name)}")
+        body.append("               " + stmt.replace("{file}", file_name))
     if hook.perform_thru:
         body.append(
             f"               PERFORM {hook.perform} THRU {hook.perform_thru}"
