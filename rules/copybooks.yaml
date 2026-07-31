@@ -68,6 +68,21 @@ file_close_failure:
     - "MOVE 'INVALID {file} FILE CLOSE' TO WS-ABEND-MSG"
     - "MOVE WS-{file}-STATUS TO WS-ABEND-STATUS"
 
+# Non-EOF READ failure.  When the assembler rewrites the LLM's inline READ
+# into a PERFORM READ-<FILE>, the generated READ-<FILE> paragraph treats
+# status 10 as end-of-file and runs this hook on any OTHER non-zero status.
+file_read_failure:
+  copy_ws:         ERRDATA
+  copy_procedure:  ERRRTN
+  perform:         FILE-ERROR-RTN
+  perform_thru:    FILE-ERROR-EXIT
+  when:            "WS-{file}-STATUS NOT = ZEROES"
+  abend_code_base: 20001
+  before_perform:
+    - "MOVE {code} TO WS-ABEND-CODE"
+    - "MOVE 'INVALID {file} FILE READ' TO WS-ABEND-MSG"
+    - "MOVE WS-{file}-STATUS TO WS-ABEND-STATUS"
+
 vsam_invalid_key:
   copy_ws:        VSAMDATA
   copy_procedure: VSAMRTN

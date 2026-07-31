@@ -1165,7 +1165,8 @@ class _SafeFmt(dict):
         return "{" + key + "}"
 
 
-def _hook_body(hook: CopybookHook, file_name: str, index: int = 0) -> List[str]:
+def _hook_body(hook: CopybookHook, file_name: str, index: int = 0,
+               indent: str = "               ") -> List[str]:
     """Statements that go inside the IF guard for a hook-driven file event.
 
     Order: each before_perform statement (with {file} and {code}
@@ -1176,19 +1177,21 @@ def _hook_body(hook: CopybookHook, file_name: str, index: int = 0) -> List[str]:
     position), giving each file a distinct abend code.  When the event has
     no abend_code_base, {code} is left untouched (surfaces as a visible
     error rather than a wrong number).
+
+    `indent` is the leading whitespace for each line; the default suits an
+    IF guard, and callers nesting the body deeper (e.g. inside a READ's
+    IF/ELSE) pass a wider indent.
     """
     subs = _SafeFmt(file=file_name)
     if hook.abend_code_base is not None:
         subs["code"] = hook.abend_code_base + index
     body: List[str] = []
     for stmt in hook.before_perform:
-        body.append(f"               {stmt.format_map(subs)}")
+        body.append(f"{indent}{stmt.format_map(subs)}")
     if hook.perform_thru:
-        body.append(
-            f"               PERFORM {hook.perform} THRU {hook.perform_thru}"
-        )
+        body.append(f"{indent}PERFORM {hook.perform} THRU {hook.perform_thru}")
     else:
-        body.append(f"               PERFORM {hook.perform}")
+        body.append(f"{indent}PERFORM {hook.perform}")
     return body
 
 
