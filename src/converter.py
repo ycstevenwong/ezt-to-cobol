@@ -1,5 +1,6 @@
 """Orchestrate EZT-to-COBOL conversion: rule-based for structure, AI for logic."""
 import requests as _requests
+from pathlib import Path
 from typing import Dict, List
 
 import re
@@ -114,17 +115,22 @@ def make_client(
 
 
 def convert_logic(
-    client:   dict,
-    sections: List[EZTSection],
-    context:  str,
-    model:    str  = DEFAULT_MODEL,
-    verbose:  bool = False,
+    client:      dict,
+    sections:    List[EZTSection],
+    context:     str,
+    prompt_log:  Path,
+    model:       str  = DEFAULT_MODEL,
+    verbose:     bool = False,
 ) -> str:
     """POST the combined JOB + REPORT logic to the LLM in a single call.
 
     The LLM sees every executable section at once and emits one unified
     PROCEDURE DIVISION, which avoids the previous duplication where REPORT
     re-emitted paragraphs it had seen in JOB's prior output.
+
+    `prompt_log` is always written (system + user message) BEFORE the
+    request goes out, so the exact prompt is on disk even if the gateway
+    refuses or errors — the moment this matters most for debugging.
     """
     content_blocks = []
     for s in sections:
@@ -159,6 +165,14 @@ def convert_logic(
         names = ", ".join(f"{s.type.value}:{s.name}" for s in sections)
         print(f"  → [logic] combined call for {names}", flush=True)
 
+    prompt_log.write_text(
+        "=== SYSTEM PROMPT ===\n" + SYSTEM_PROMPT
+        + "\n\n=== USER MESSAGE ===\n" + user_message + "\n",
+        encoding="utf-8",
+    )
+    if verbose:
+        print(f"  → [logic] prompt logged to {prompt_log}", flush=True)
+
     body = {
         "model":      model,
         "max_tokens": MAX_TOKENS,
@@ -181,11 +195,12 @@ def convert_logic(
 
 
 def convert_all(
-    client:   dict,
-    sections: List[EZTSection],
-    source:   str,
-    model:    str  = DEFAULT_MODEL,
-    verbose:  bool = False,
+    client:      dict,
+    sections:    List[EZTSection],
+    source:      str,
+    prompt_log:  Path,
+    model:       str  = DEFAULT_MODEL,
+    verbose:     bool = False,
 ) -> Dict[str, str]:
     """Convert every EZT section.
 
@@ -193,6 +208,10 @@ def convert_all(
     All JOB and REPORT sections are converted together in a single LLM call
     so the model sees the full program at once and emits one unified
     PROCEDURE DIVISION with no duplicated paragraphs.
+
+    `prompt_log` is the path convert_logic always writes the exact LLM
+    prompt to before sending it (only relevant when the program has a
+    JOB/REPORT section to convert via the LLM).
     """
     results: Dict[str, str] = {}
     context_chunks: List[str] = []
@@ -280,7 +299,7 @@ def convert_all(
     if logic_sections:
         context = "\n\n".join(context_chunks)
         results[COMBINED_LOGIC_KEY] = convert_logic(
-            client, logic_sections, context, model=model, verbose=verbose
+            client, logic_sections, context, prompt_log, model=model, verbose=verbose
         )
 
     return results

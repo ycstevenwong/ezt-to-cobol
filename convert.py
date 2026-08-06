@@ -49,8 +49,13 @@ def _convert_one(
     # Use only the base name (before any extra dots) to avoid periods in PROGRAM-ID
     prog_name = program_name or input_file.stem.split(".")[0][:8].upper()
 
+    # The exact LLM prompt is always written here before the request goes
+    # out (no flag needed) — so it's on disk even if the gateway refuses.
+    prompt_log = (output or input_file).with_suffix(".prompt.txt")
+
     try:
-        converted = convert_all(client, sections, source, model=model, verbose=verbose)
+        converted = convert_all(client, sections, source, prompt_log,
+                                 model=model, verbose=verbose)
     except requests.exceptions.ConnectionError:
         click.echo(
             f"Cannot connect to LLM at {client['url']}. "
@@ -64,6 +69,9 @@ def _convert_one(
     except requests.exceptions.Timeout:
         click.echo("Request timed out. Try increasing --timeout or check the server.", err=True)
         return False
+    finally:
+        if prompt_log.exists():
+            click.echo(f"  → logged LLM prompt to {prompt_log}", err=True)
 
     cobol = assemble(sections, converted, program_name=prog_name, source=source)
 
