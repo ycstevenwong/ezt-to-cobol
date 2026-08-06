@@ -1,6 +1,7 @@
 """Orchestrate EZT-to-COBOL conversion: rule-based for structure, AI for logic."""
 import requests as _requests
-from typing import Dict, List
+from pathlib import Path
+from typing import Dict, List, Optional
 
 import re
 from src.assembler import split_ws_proc
@@ -114,11 +115,12 @@ def make_client(
 
 
 def convert_logic(
-    client:   dict,
-    sections: List[EZTSection],
-    context:  str,
-    model:    str  = DEFAULT_MODEL,
-    verbose:  bool = False,
+    client:      dict,
+    sections:    List[EZTSection],
+    context:     str,
+    model:       str  = DEFAULT_MODEL,
+    verbose:     bool = False,
+    dump_prompt: Optional[Path] = None,
 ) -> str:
     """POST the combined JOB + REPORT logic to the LLM in a single call.
 
@@ -159,6 +161,16 @@ def convert_logic(
         names = ", ".join(f"{s.type.value}:{s.name}" for s in sections)
         print(f"  → [logic] combined call for {names}", flush=True)
 
+    if dump_prompt:
+        dump_prompt.write_text(
+            "=== SYSTEM PROMPT ===\n" + SYSTEM_PROMPT
+            + "\n\n=== USER MESSAGE ===\n" + user_message + "\n",
+            encoding="utf-8",
+        )
+        if verbose:
+            print(f"  → [logic] prompt dumped to {dump_prompt} (LLM not called)", flush=True)
+        return ""
+
     body = {
         "model":      model,
         "max_tokens": MAX_TOKENS,
@@ -181,11 +193,12 @@ def convert_logic(
 
 
 def convert_all(
-    client:   dict,
-    sections: List[EZTSection],
-    source:   str,
-    model:    str  = DEFAULT_MODEL,
-    verbose:  bool = False,
+    client:      dict,
+    sections:    List[EZTSection],
+    source:      str,
+    model:       str  = DEFAULT_MODEL,
+    verbose:     bool = False,
+    dump_prompt: Optional[Path] = None,
 ) -> Dict[str, str]:
     """Convert every EZT section.
 
@@ -280,7 +293,8 @@ def convert_all(
     if logic_sections:
         context = "\n\n".join(context_chunks)
         results[COMBINED_LOGIC_KEY] = convert_logic(
-            client, logic_sections, context, model=model, verbose=verbose
+            client, logic_sections, context, model=model, verbose=verbose,
+            dump_prompt=dump_prompt,
         )
 
     return results

@@ -22,6 +22,7 @@ def _convert_one(
     program_name: str | None,
     verbose: bool,
     dry_run: bool,
+    dump_prompt: Path | None = None,
 ) -> bool:
     """Convert a single EZT file. Returns True on success."""
     try:
@@ -48,6 +49,12 @@ def _convert_one(
 
     # Use only the base name (before any extra dots) to avoid periods in PROGRAM-ID
     prog_name = program_name or input_file.stem.split(".")[0][:8].upper()
+
+    if dump_prompt:
+        convert_all(client, sections, source, model=model, verbose=verbose,
+                    dump_prompt=dump_prompt)
+        click.echo(f"  → wrote LLM prompt to {dump_prompt} (LLM not called)", err=True)
+        return True
 
     try:
         converted = convert_all(client, sections, source, model=model, verbose=verbose)
@@ -122,8 +129,16 @@ def _convert_one(
               help="Show section-by-section progress to stderr.")
 @click.option("--dry-run", is_flag=True,
               help="Parse and show detected sections; do not call the model.")
+@click.option(
+    "--dump-prompt",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Write the full LLM prompt (system + user message) to this file "
+         "instead of calling the model. Useful for inspecting exactly what "
+         "would be sent (e.g. to check against a gateway content filter).",
+)
 def main(input_files, output_dir, model, base_url, api_key, no_verify,
-         program_name, verbose, dry_run):
+         program_name, verbose, dry_run, dump_prompt):
     """Convert one or more Easytrieve (.ezt) programs to COBOL.
 
     INPUT_FILES: one or more .ezt source files.
@@ -146,10 +161,15 @@ def main(input_files, output_dir, model, base_url, api_key, no_verify,
         else:
             out = input_file.with_suffix(".cbl")
 
+        if dump_prompt and len(input_files) > 1:
+            dp = dump_prompt.parent / f"{dump_prompt.stem}_{input_file.stem}{dump_prompt.suffix}"
+        else:
+            dp = dump_prompt
+
         success = _convert_one(
             input_file, out, client, model,
             program_name if len(input_files) == 1 else None,
-            verbose, dry_run,
+            verbose, dry_run, dp,
         )
         if success:
             ok += 1
