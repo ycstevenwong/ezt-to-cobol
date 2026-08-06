@@ -56,8 +56,15 @@ def _convert_one(
         click.echo(f"  → wrote LLM prompt to {dump_prompt} (LLM not called)", err=True)
         return True
 
+    # Mandatory on every real (non-dry-run, non-dump-only) conversion: the
+    # exact prompt sent to the LLM is always logged next to the output, and
+    # it's written BEFORE the request goes out — so if the gateway refuses
+    # or errors, the prompt that triggered it is still on disk to inspect.
+    prompt_log = (output or input_file).with_suffix(".prompt.txt")
+
     try:
-        converted = convert_all(client, sections, source, model=model, verbose=verbose)
+        converted = convert_all(client, sections, source, model=model, verbose=verbose,
+                                 prompt_log=prompt_log)
     except requests.exceptions.ConnectionError:
         click.echo(
             f"Cannot connect to LLM at {client['url']}. "
@@ -71,6 +78,9 @@ def _convert_one(
     except requests.exceptions.Timeout:
         click.echo("Request timed out. Try increasing --timeout or check the server.", err=True)
         return False
+    finally:
+        if prompt_log.exists():
+            click.echo(f"  → logged LLM prompt to {prompt_log}", err=True)
 
     cobol = assemble(sections, converted, program_name=prog_name, source=source)
 

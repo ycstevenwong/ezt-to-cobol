@@ -114,6 +114,14 @@ def make_client(
     }
 
 
+def _write_prompt_dump(path: Path, user_message: str) -> None:
+    path.write_text(
+        "=== SYSTEM PROMPT ===\n" + SYSTEM_PROMPT
+        + "\n\n=== USER MESSAGE ===\n" + user_message + "\n",
+        encoding="utf-8",
+    )
+
+
 def convert_logic(
     client:      dict,
     sections:    List[EZTSection],
@@ -121,6 +129,7 @@ def convert_logic(
     model:       str  = DEFAULT_MODEL,
     verbose:     bool = False,
     dump_prompt: Optional[Path] = None,
+    prompt_log:  Optional[Path] = None,
 ) -> str:
     """POST the combined JOB + REPORT logic to the LLM in a single call.
 
@@ -162,14 +171,18 @@ def convert_logic(
         print(f"  → [logic] combined call for {names}", flush=True)
 
     if dump_prompt:
-        dump_prompt.write_text(
-            "=== SYSTEM PROMPT ===\n" + SYSTEM_PROMPT
-            + "\n\n=== USER MESSAGE ===\n" + user_message + "\n",
-            encoding="utf-8",
-        )
+        _write_prompt_dump(dump_prompt, user_message)
         if verbose:
             print(f"  → [logic] prompt dumped to {dump_prompt} (LLM not called)", flush=True)
         return ""
+
+    # Always logged (independent of --dump-prompt) BEFORE the request goes out,
+    # so the exact prompt is captured on disk even if the gateway refuses or
+    # errors — the one moment this matters most for debugging.
+    if prompt_log:
+        _write_prompt_dump(prompt_log, user_message)
+        if verbose:
+            print(f"  → [logic] prompt logged to {prompt_log}", flush=True)
 
     body = {
         "model":      model,
@@ -199,6 +212,7 @@ def convert_all(
     model:       str  = DEFAULT_MODEL,
     verbose:     bool = False,
     dump_prompt: Optional[Path] = None,
+    prompt_log:  Optional[Path] = None,
 ) -> Dict[str, str]:
     """Convert every EZT section.
 
@@ -294,7 +308,7 @@ def convert_all(
         context = "\n\n".join(context_chunks)
         results[COMBINED_LOGIC_KEY] = convert_logic(
             client, logic_sections, context, model=model, verbose=verbose,
-            dump_prompt=dump_prompt,
+            dump_prompt=dump_prompt, prompt_log=prompt_log,
         )
 
     return results
