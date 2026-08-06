@@ -1,7 +1,6 @@
 """Orchestrate EZT-to-COBOL conversion: rule-based for structure, AI for logic."""
 import requests as _requests
-from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import re
 from src.assembler import split_ws_proc
@@ -114,22 +113,12 @@ def make_client(
     }
 
 
-def _write_prompt_dump(path: Path, user_message: str) -> None:
-    path.write_text(
-        "=== SYSTEM PROMPT ===\n" + SYSTEM_PROMPT
-        + "\n\n=== USER MESSAGE ===\n" + user_message + "\n",
-        encoding="utf-8",
-    )
-
-
 def convert_logic(
-    client:      dict,
-    sections:    List[EZTSection],
-    context:     str,
-    model:       str  = DEFAULT_MODEL,
-    verbose:     bool = False,
-    dump_prompt: Optional[Path] = None,
-    prompt_log:  Optional[Path] = None,
+    client:   dict,
+    sections: List[EZTSection],
+    context:  str,
+    model:    str  = DEFAULT_MODEL,
+    verbose:  bool = False,
 ) -> str:
     """POST the combined JOB + REPORT logic to the LLM in a single call.
 
@@ -170,20 +159,6 @@ def convert_logic(
         names = ", ".join(f"{s.type.value}:{s.name}" for s in sections)
         print(f"  → [logic] combined call for {names}", flush=True)
 
-    if dump_prompt:
-        _write_prompt_dump(dump_prompt, user_message)
-        if verbose:
-            print(f"  → [logic] prompt dumped to {dump_prompt} (LLM not called)", flush=True)
-        return ""
-
-    # Always logged (independent of --dump-prompt) BEFORE the request goes out,
-    # so the exact prompt is captured on disk even if the gateway refuses or
-    # errors — the one moment this matters most for debugging.
-    if prompt_log:
-        _write_prompt_dump(prompt_log, user_message)
-        if verbose:
-            print(f"  → [logic] prompt logged to {prompt_log}", flush=True)
-
     body = {
         "model":      model,
         "max_tokens": MAX_TOKENS,
@@ -206,13 +181,11 @@ def convert_logic(
 
 
 def convert_all(
-    client:      dict,
-    sections:    List[EZTSection],
-    source:      str,
-    model:       str  = DEFAULT_MODEL,
-    verbose:     bool = False,
-    dump_prompt: Optional[Path] = None,
-    prompt_log:  Optional[Path] = None,
+    client:   dict,
+    sections: List[EZTSection],
+    source:   str,
+    model:    str  = DEFAULT_MODEL,
+    verbose:  bool = False,
 ) -> Dict[str, str]:
     """Convert every EZT section.
 
@@ -307,8 +280,7 @@ def convert_all(
     if logic_sections:
         context = "\n\n".join(context_chunks)
         results[COMBINED_LOGIC_KEY] = convert_logic(
-            client, logic_sections, context, model=model, verbose=verbose,
-            dump_prompt=dump_prompt, prompt_log=prompt_log,
+            client, logic_sections, context, model=model, verbose=verbose
         )
 
     return results

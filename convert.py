@@ -22,7 +22,6 @@ def _convert_one(
     program_name: str | None,
     verbose: bool,
     dry_run: bool,
-    dump_prompt: Path | None = None,
 ) -> bool:
     """Convert a single EZT file. Returns True on success."""
     try:
@@ -50,21 +49,8 @@ def _convert_one(
     # Use only the base name (before any extra dots) to avoid periods in PROGRAM-ID
     prog_name = program_name or input_file.stem.split(".")[0][:8].upper()
 
-    if dump_prompt:
-        convert_all(client, sections, source, model=model, verbose=verbose,
-                    dump_prompt=dump_prompt)
-        click.echo(f"  → wrote LLM prompt to {dump_prompt} (LLM not called)", err=True)
-        return True
-
-    # Mandatory on every real (non-dry-run, non-dump-only) conversion: the
-    # exact prompt sent to the LLM is always logged next to the output, and
-    # it's written BEFORE the request goes out — so if the gateway refuses
-    # or errors, the prompt that triggered it is still on disk to inspect.
-    prompt_log = (output or input_file).with_suffix(".prompt.txt")
-
     try:
-        converted = convert_all(client, sections, source, model=model, verbose=verbose,
-                                 prompt_log=prompt_log)
+        converted = convert_all(client, sections, source, model=model, verbose=verbose)
     except requests.exceptions.ConnectionError:
         click.echo(
             f"Cannot connect to LLM at {client['url']}. "
@@ -78,9 +64,6 @@ def _convert_one(
     except requests.exceptions.Timeout:
         click.echo("Request timed out. Try increasing --timeout or check the server.", err=True)
         return False
-    finally:
-        if prompt_log.exists():
-            click.echo(f"  → logged LLM prompt to {prompt_log}", err=True)
 
     cobol = assemble(sections, converted, program_name=prog_name, source=source)
 
@@ -139,16 +122,8 @@ def _convert_one(
               help="Show section-by-section progress to stderr.")
 @click.option("--dry-run", is_flag=True,
               help="Parse and show detected sections; do not call the model.")
-@click.option(
-    "--dump-prompt",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Write the full LLM prompt (system + user message) to this file "
-         "instead of calling the model. Useful for inspecting exactly what "
-         "would be sent (e.g. to check against a gateway content filter).",
-)
 def main(input_files, output_dir, model, base_url, api_key, no_verify,
-         program_name, verbose, dry_run, dump_prompt):
+         program_name, verbose, dry_run):
     """Convert one or more Easytrieve (.ezt) programs to COBOL.
 
     INPUT_FILES: one or more .ezt source files.
@@ -171,15 +146,10 @@ def main(input_files, output_dir, model, base_url, api_key, no_verify,
         else:
             out = input_file.with_suffix(".cbl")
 
-        if dump_prompt and len(input_files) > 1:
-            dp = dump_prompt.parent / f"{dump_prompt.stem}_{input_file.stem}{dump_prompt.suffix}"
-        else:
-            dp = dump_prompt
-
         success = _convert_one(
             input_file, out, client, model,
             program_name if len(input_files) == 1 else None,
-            verbose, dry_run, dp,
+            verbose, dry_run,
         )
         if success:
             ok += 1
