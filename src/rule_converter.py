@@ -887,6 +887,12 @@ def _move_targets_comment(
     Every line is a fixed-format comment ('*' in column 7) held within
     column 72 — assembler._enforce_col_limit would otherwise fold an
     over-long line onto a continuation that is no longer a comment.
+
+    The target name is never truncated to make a line fit: it is the one
+    string the model must reproduce character-for-character, so a clipped
+    target would be worse than no comment at all.  Overflow is absorbed by
+    dropping the PIC first, then by carrying the target onto its own
+    continuation comment line.
     """
     if not pairs:
         return []
@@ -894,10 +900,17 @@ def _move_targets_comment(
     for src, target in pairs:
         fld = lookup.get(src) if lookup else None
         pic = _pic(fld.type, fld.length, fld.decimals) if fld else ""
-        line = f"      *   {src} {pic} -> {target}".replace("  ->", " ->")
+        head = f"      *   {src} {pic}".rstrip()
+        line = f"{head} -> {target}"
+        if len(line) > _COMMENT_MAX and pic:
+            head = f"      *   {src}"               # drop the PIC
+            line = f"{head} -> {target}"
         if len(line) > _COMMENT_MAX:
-            line = f"      *   {src} -> {target}"   # drop the PIC to fit
-        out.append(line[:_COMMENT_MAX])
+            # Still too wide: split so both names survive intact.
+            out.append(head[:_COMMENT_MAX])
+            out.append(f"      *     -> {target}"[:_COMMENT_MAX])
+            continue
+        out.append(line)
     return out
 
 

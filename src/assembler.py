@@ -170,11 +170,22 @@ def _dedupe_ws_items(ws_text: str) -> str:
     that the LLM was told to use) and discard subsequent duplicates along
     with their subordinate 05/10/... lines.  FILLER 01 items are exempt —
     they intentionally repeat.
+
+    Comment lines are held back rather than emitted immediately: a comment
+    introduces the block that FOLLOWS it (rule_converter puts the
+    MOVE-targets block above its 01), so it must live or die with that
+    block, not with whichever one happened to precede it.  Emitting them
+    inline would drop a surviving block's comment whenever the previous
+    block was discarded as a duplicate.
     """
     out: List[str] = []
     seen: set = set()
     skip = False
+    pending_comments: List[str] = []
     for line in ws_text.splitlines():
+        if _is_proc_comment(line):
+            pending_comments.append(line)
+            continue
         m = _WS_01_RE.match(line)
         if m:
             name = m.group(1).upper()
@@ -182,12 +193,16 @@ def _dedupe_ws_items(ws_text: str) -> str:
                 skip = False
             elif name in seen:
                 skip = True
+                pending_comments = []      # discarded block takes them along
                 continue
             else:
                 seen.add(name)
                 skip = False
         if not skip:
+            out.extend(pending_comments)
             out.append(line)
+        pending_comments = []
+    out.extend(pending_comments)
     return "\n".join(out)
 
 
