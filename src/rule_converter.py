@@ -1002,6 +1002,36 @@ def _short_suffix(kind: str, line_num: Optional[int]) -> str:
     return f"{kind_initial}{line_num:02d}"
 
 
+def _unmarked_bare_field(frag: _ColFragment) -> bool:
+    """True for a field fragment that carried no COL and no +N marker."""
+    return (frag.field is not None
+            and frag.col is None
+            and frag.gap_before is None)
+
+
+def _drop_unknown_bare_fields(
+    fragments: List[_ColFragment],
+    lookup:    Optional[Dict[str, Union[EZTField, EZTDefine]]],
+) -> List[_ColFragment]:
+    """Discard field fragments that are unmarked AND undeclared.
+
+    A bare word trailing the text on a TITLE/HEADING/LINE is ambiguous: it
+    may name a field, or it may be a directive keyword this converter does
+    not model (SKIP, NEWPAGE, ...).  Guessing "field" injects a phantom
+    column and shifts everything after it, so an unmarked word is accepted
+    only when the preamble actually declares it.  A fragment positioned
+    with COL or +N is explicit enough to trust as written, and literals are
+    never affected.
+
+    With no lookup available the fragments pass through untouched — better
+    an extra column than dropping a field that really does exist.
+    """
+    if lookup is None:
+        return fragments
+    return [f for f in fragments
+            if not (_unmarked_bare_field(f) and f.field not in lookup)]
+
+
 def _gen_line_block(
     rpt:         str,
     kind:        str,
@@ -1012,9 +1042,18 @@ def _gen_line_block(
     """Dispatch to the centered or positioned emitter based on line shape."""
     layout_name = _numbered_name(f"WS-{rpt}-{kind}", line.line_num)
     if line.fragments:
+        frags = _drop_unknown_bare_fields(line.fragments, lookup)
+        if not frags:
+            return []
+        # Everything positional fell away — this was a plain centered line
+        # with a trailing keyword, so render it the way it was before the
+        # multi-segment forms existed.
+        if len(frags) == 1 and frags[0].text is not None \
+                and frags[0].col is None and frags[0].gap_before is None:
+            return _gen_text_line_block(layout_name, frags[0].text, width)
         sub_prefix = f"WS-{rpt}-{_short_suffix(kind, line.line_num)}"
         return _gen_positioned_line_block(
-            layout_name, sub_prefix, line.fragments, width, lookup
+            layout_name, sub_prefix, frags, width, lookup
         )
     return _gen_text_line_block(layout_name, line.text, width)
 
