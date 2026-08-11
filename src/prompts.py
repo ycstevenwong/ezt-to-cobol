@@ -136,10 +136,20 @@ Per-report items already in WS:
   WS-<RPT>-DTL with WS-DTL-<FLD> subfields  (from PRINT field list)
   WS-<CTRL>-SAVE                       (from CONTROL <field>)
 
-Layouts with COL <n> <FIELD> fragments are preceded by a comment block:
+Every layout holding field subfields -- the detail line (WS-<RPT>-DTL)
+and any TITLE/HEADING/LINE/FOOTING carrying field references -- is
+preceded by a comment block naming its MOVE targets:
        * <LAYOUT> MOVE-targets:
        *   <EZT-SOURCE> PIC ... -> <GENERATED-SUBFIELD>
 MOVE source data into the right-hand <GENERATED-SUBFIELD> name verbatim.
+These generated names are NOT derivable from the EZT field name: they
+carry a layout prefix, are cut to 25 characters, and gain a -2/-3 suffix
+when two long names would otherwise collide, e.g.
+       *   CUSTOMER-ACCOUNT-BALANCE-CURRENT -> WS-DTL-CUSTOMER-ACCOUNT-B
+       *   CUSTOMER-ACCOUNT-BALANCE-PREVIOUS -> WS-DTL-CUSTOMER-ACCOUNT-2
+Copy the target exactly as written; never reconstruct it yourself.
+(The PIC shown is the SOURCE field's; the subfield itself is PIC X(n),
+and COBOL's MOVE converts numeric or packed source data for you.)
 
 ━━ IDENTIFIER ALLOW-LIST (CRITICAL) ━━
 The context ends with an "AVAILABLE WORKING-STORAGE + FILE-SECTION

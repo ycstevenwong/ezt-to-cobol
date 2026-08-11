@@ -865,6 +865,42 @@ def _resolve_fragment_columns(
         cur += width
 
 
+_COMMENT_MAX = 72   # fixed-format code area ends at column 72
+
+
+def _move_targets_comment(
+    layout_name: str,
+    pairs:       List[Tuple[str, str]],
+    lookup:      Optional[Dict[str, Union[EZTField, EZTDefine]]] = None,
+) -> List[str]:
+    """Emit a comment block naming the MOVE target for each field subfield.
+
+    pairs: ordered (ezt_source_field, generated_subfield) entries.
+
+    The LLM writes the procedure code that fills these layouts, but the
+    generated subfield names cannot be derived from the EZT source — they
+    carry a layout-specific prefix and are truncated to _MAX_NAME chars and
+    de-duplicated.  Spelling them out here is what lets the model emit
+    `MOVE <source> TO <generated>` with a name that actually exists;
+    prompts.py points the model at this block.
+
+    Every line is a fixed-format comment ('*' in column 7) held within
+    column 72 — assembler._enforce_col_limit would otherwise fold an
+    over-long line onto a continuation that is no longer a comment.
+    """
+    if not pairs:
+        return []
+    out = [f"      * {layout_name} MOVE-targets:"[:_COMMENT_MAX]]
+    for src, target in pairs:
+        fld = lookup.get(src) if lookup else None
+        pic = _pic(fld.type, fld.length, fld.decimals) if fld else ""
+        line = f"      *   {src} {pic} -> {target}".replace("  ->", " ->")
+        if len(line) > _COMMENT_MAX:
+            line = f"      *   {src} -> {target}"   # drop the PIC to fit
+        out.append(line[:_COMMENT_MAX])
+    return out
+
+
 def _gen_positioned_line_block(
     layout_name: str,
     sub_prefix:  str,
@@ -897,6 +933,12 @@ def _gen_positioned_line_block(
     name_map = _resolve_subfield_names(sub_prefix, fragments)
 
     items: List[Tuple[str, str, str]] = []
+    # (source, generated) for every field subfield actually emitted below —
+    # drives the MOVE-targets comment block.  Collected in the loop rather
+    # than from `fragments` so a clipped/skipped fragment is never advertised
+    # as a target that doesn't exist in the layout.
+    move_pairs: List[Tuple[str, str]] = []
+    seen_fields: set = set()
     cur_col = 1
     for frag, max_w in zip(sorted_frags, max_widths):
         if frag.col > cur_col:
@@ -924,12 +966,16 @@ def _gen_positioned_line_block(
                 break
             sub_name = name_map.get(frag.field, _build_sub_name(sub_prefix, frag.field))
             items.append((sub_name, f"PIC X({col_w})", ""))
+            if frag.field not in seen_fields:
+                seen_fields.add(frag.field)
+                move_pairs.append((frag.field, sub_name))
             cur_col += col_w
 
     trailing = width - (cur_col - 1)
     if trailing > 0:
         items.append(("FILLER", f"PIC X({trailing})", "VALUE SPACES"))
-    return _layout_block(layout_name, items)
+    return (_move_targets_comment(layout_name, move_pairs, lookup)
+            + _layout_block(layout_name, items))
 
 
 def _short_suffix(kind: str, line_num: Optional[int]) -> str:
@@ -973,6 +1019,7 @@ def _gen_dtl_block(rpt: str, fields: List[str],
     name_map = _resolve_dtl_names(fields)
 
     items: List[Tuple[str, str, str]] = []
+    move_pairs: List[Tuple[str, str]] = []
     used = 0
     if _LEFT_MARGIN:
         items.append(("FILLER", f"PIC X({_LEFT_MARGIN})", "VALUE SPACES"))
@@ -988,11 +1035,14 @@ def _gen_dtl_block(rpt: str, fields: List[str],
             col_w = 10
         sub_name = name_map[fname]
         items.append((sub_name, f"PIC X({col_w})", ""))
+        move_pairs.append((fname.upper(), sub_name))
         used += col_w
     trailing = width - used
     if trailing > 0:
         items.append(("FILLER", f"PIC X({trailing})", "VALUE SPACES"))
-    return _layout_block(f"WS-{rpt}-DTL", items)
+    layout_name = f"WS-{rpt}-DTL"
+    return (_move_targets_comment(layout_name, move_pairs, lookup)
+            + _layout_block(layout_name, items))
 
 
 def _gen_hdg_block(rpt: str, fields: List[str],
