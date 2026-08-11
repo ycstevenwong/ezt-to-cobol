@@ -449,16 +449,30 @@ def gen_working_storage(defines: List[EZTDefine]) -> str:
 
 @dataclass
 class _ColFragment:
-    """One COL-positioned piece on a TITLE/HEADING/LINE/FOOTING line.
+    """One positioned piece on a TITLE/HEADING/LINE/FOOTING line.
 
     Exactly one of `text` (a quoted literal) or `field` (an unquoted field
     reference) is populated.  Field references are the EZT form
         LINE 01 COL 01 WS-CUSTNO
     where the printed value comes from a WS variable's content at runtime.
+
+    Two ways a fragment gets its column, both resolved to a concrete `col`
+    by _resolve_fragment_columns() before rendering:
+      • COL-positioned form (LINE 01 COL 01 'text' COL 20 'text2'):
+        `col` is set directly at parse time — each fragment's position is
+        explicit in the source.
+      • Chain form ('text1' +N 'text2' +M field3 ...): `col` starts as
+        None and `gap_before` holds the literal space-count before this
+        fragment (None or 0 when the segments simply abut).  The absolute column can't be known until the previous
+        fragment's rendered width is known — trivial for a literal
+        (len(text)), but a field segment's width depends on its declared
+        PIC, which requires the field lookup — so resolution is deferred
+        to render time, when that lookup is available.
     """
-    col:   int                       # 1-based column position
-    text:  Optional[str] = None      # literal text
-    field: Optional[str] = None      # field name (uppercased)
+    col:        Optional[int] = None   # 1-based column position, once resolved
+    text:       Optional[str] = None   # literal text
+    field:      Optional[str] = None   # field name (uppercased)
+    gap_before: Optional[int] = None   # chain form only: spaces before this fragment
 
 
 @dataclass
@@ -495,6 +509,12 @@ def _tokenize_directive(s: str) -> List[str]:
 
     Handles single and double quotes; doubled quotes inside a literal
     ('It''s') are treated as an escaped quote, not as a terminator.
+
+    An unquoted run ends at a quote as well as at whitespace, so a token
+    butted directly against a literal still splits correctly.  That case
+    arises from EZT line continuation: a source line ending '+19+' (gap
+    plus continuation marker) is folded by join_continuations() with no
+    intervening space, yielding "+19'AGING REPORT'" on one logical line.
     """
     tokens: List[str] = []
     i, n = 0, len(s)
@@ -516,11 +536,37 @@ def _tokenize_directive(s: str) -> List[str]:
             i = j + 1
         else:
             j = i
-            while j < n and not s[j].isspace():
+            while j < n and not s[j].isspace() and s[j] not in ("'", '"'):
                 j += 1
             tokens.append(s[i:j])
             i = j
     return tokens
+
+
+# Chain-form spacer.  The canonical spelling is '+19'; the optional
+# trailing '+' also accepts the '+19+' variant seen in some sources.
+_GAP_RE   = re.compile(r"^\+(\d+)\+?$")
+# A bare field reference in a directive (e.g. CUSTNO, WS-TOTAL).
+_IDENT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+
+
+def _merge_split_gaps(toks: List[str]) -> List[str]:
+    """Join a bare '+' that is followed by a digit token into one gap token.
+
+    Some sources write the spacer with a space after the sign ('+ 19'),
+    which _tokenize_directive splits into ['+', '19'].  Rejoining here
+    lets a single _GAP_RE handle every spelling.
+    """
+    out: List[str] = []
+    i = 0
+    while i < len(toks):
+        if toks[i] == "+" and i + 1 < len(toks) and toks[i + 1].isdigit():
+            out.append("+" + toks[i + 1])
+            i += 2
+            continue
+        out.append(toks[i])
+        i += 1
+    return out
 
 
 def _parse_text_line(rest: str) -> _ReportLine:
@@ -529,8 +575,25 @@ def _parse_text_line(rest: str) -> _ReportLine:
     Supported forms (line number is optional throughout):
       NN 'text'                                   → centered text
       NN COL c 'text' [COL c 'text' ...]          → COL-positioned
+      NN 'text' +N 'text2' [+M field3 ...]        → chain: concatenated
+                                                     segments separated by
+                                                     an N-space gap, flush
+                                                     from column 1
+      NN COL c 'text' +N 'text2'                  → the two mixed
+      NN 'text' 'text2'                           → chain with a zero gap:
+                                                     segments concatenate
+                                                     flush from column 1
       'text'                                       → centered, no line num
       COL c 'text' ...                             → positioned, no line num
+
+    The gap spacer is written '+19' (canonically), '+19+', or '+ 19' —
+    all three are accepted and mean the same thing: N blank spaces
+    between the preceding segment and the next one.
+
+    A single literal with no marker stays centered (the long-standing
+    behaviour); two or more segments always form a chain, because that is
+    what a bare '+' continuation collapses to once the physical lines are
+    folded together.
     """
     toks = _tokenize_directive(rest)
 
@@ -542,24 +605,54 @@ def _parse_text_line(rest: str) -> _ReportLine:
         line_num = int(toks[0])
         toks = toks[1:]
 
-    # COL-positioned form: zero or more "COL n {literal | field}" triples.
-    if toks and toks[0].upper() == "COL":
+    # Positioned forms — COL anchors and/or +N gaps, in any combination.
+    # One scanner handles both so a line may mix them (COL 1 'A' +5 'B'):
+    # a COL sets the next fragment's absolute column, a +N sets the space
+    # gap before it.  Chain fragments carry col=None; _resolve_fragment_columns()
+    # resolves them at render time, when the field lookup needed to size a
+    # field segment is available.
+    toks = _merge_split_gaps(toks)
+    # Two or more segments with no explicit marker is still a chain — just
+    # one with a zero gap between them.  This is what a bare '+' line
+    # continuation leaves behind: 'TEST CENTER' + / 'AGING REPORT' folds to
+    # two adjacent literals, which must concatenate flush from column 1
+    # rather than collapsing to the centered form (which would keep only
+    # the first literal and silently drop the rest).
+    _seg_count = sum(1 for t in toks
+                     if t.startswith(("'", '"')) or _IDENT_RE.match(t))
+    if toks and (toks[0].upper() == "COL"
+                 or any(_GAP_RE.match(t) for t in toks)
+                 or _seg_count >= 2):
         frags: List[_ColFragment] = []
+        pending_col: Optional[int] = None
+        gap_before:  Optional[int] = None
         i = 0
-        while i + 2 < len(toks) + 1:
-            if i + 2 >= len(toks) or toks[i].upper() != "COL":
-                break
-            try:
-                col = int(toks[i + 1])
-            except ValueError:
-                break
-            value_tok = toks[i + 2]
-            if value_tok.startswith("'") or value_tok.startswith('"'):
-                frags.append(_ColFragment(col=col, text=_strip_quotes(value_tok)))
+        while i < len(toks):
+            tok = toks[i]
+            gap_m = _GAP_RE.match(tok)
+            if gap_m:
+                gap_before = int(gap_m.group(1))
+                i += 1
+                continue
+            if tok.upper() == "COL" and i + 1 < len(toks) and toks[i + 1].isdigit():
+                pending_col = int(toks[i + 1])
+                i += 2
+                continue
+            if tok.startswith(("'", '"')):
+                frags.append(_ColFragment(col=pending_col, gap_before=gap_before,
+                                          text=_strip_quotes(tok)))
+            elif _IDENT_RE.match(tok):
+                # Unquoted identifier — a field reference (e.g. WS-CUSTNO).
+                frags.append(_ColFragment(col=pending_col, gap_before=gap_before,
+                                          field=tok.upper()))
             else:
-                # Unquoted token — treat as a field reference (e.g. WS-CUSTNO).
-                frags.append(_ColFragment(col=col, field=value_tok.upper()))
-            i += 3
+                # Unrecognised token (stray '+', punctuation) — skip it
+                # rather than emitting it as a bogus field name.
+                i += 1
+                continue
+            pending_col = None
+            gap_before = None
+            i += 1
         return _ReportLine(line_num=line_num, fragments=frags)
 
     # Centered form: take the (single) quoted string literal.
@@ -740,6 +833,38 @@ def _resolve_dtl_names(fields: List[str]) -> Dict[str, str]:
     return mapping
 
 
+def _resolve_fragment_columns(
+    fragments: List[_ColFragment],
+    lookup:    Optional[Dict[str, Union[EZTField, EZTDefine]]],
+) -> None:
+    """Fill in `col` for chain-form fragments (col=None, gap_before set),
+    mutating each fragment in place.
+
+    Walks fragments in source order tracking a running column: a fragment
+    with an explicit `col` (COL-positioned form) resets the running
+    position; a chain-form fragment (col=None) advances it by its
+    `gap_before` spaces.  After placing a fragment, the running column
+    advances by that fragment's rendered width — len(text) for a literal,
+    or the field's PIC-derived display width (falling back to 10 when the
+    field isn't in `lookup`) for a field reference.  Mixing COL-positioned
+    and chain-form fragments on the same line works naturally: an explicit
+    COL always wins, and chain fragments after it continue from there.
+    """
+    cur = 1
+    for frag in fragments:
+        if frag.col is not None:
+            cur = frag.col
+        else:
+            cur += frag.gap_before or 0
+            frag.col = cur
+        if frag.text is not None:
+            width = len(frag.text)
+        else:
+            fld = lookup.get(frag.field) if (lookup and frag.field) else None
+            width = _display_width(fld.type, fld.length, fld.decimals) if fld else 10
+        cur += width
+
+
 def _gen_positioned_line_block(
     layout_name: str,
     sub_prefix:  str,
@@ -756,6 +881,7 @@ def _gen_positioned_line_block(
     """
     if not fragments:
         return []
+    _resolve_fragment_columns(fragments, lookup)
     sorted_frags = sorted(fragments, key=lambda f: f.col)
     # Each fragment can grow up to (next fragment's COL - 1) before clipping.
     max_widths: List[int] = []
