@@ -620,9 +620,17 @@ def _parse_text_line(rest: str) -> _ReportLine:
     # the first literal and silently drop the rest).
     _seg_count = sum(1 for t in toks
                      if t.startswith(("'", '"')) or _IDENT_RE.match(t))
+    # A lone UNQUOTED word is a field reference, not title text — quoting is
+    # what marks text in EZT.  Without this a one-field line (LINE 01 CUSTNO)
+    # printed the field's NAME as a centered literal and got no heading.
+    # If the name turns out to be undeclared, _gen_line_block falls back to
+    # rendering it as text, which is what used to happen to every such line.
+    _lone_bare_word = (_seg_count == 1 and any(
+        not t.startswith(("'", '"')) and _IDENT_RE.match(t) for t in toks))
     if toks and (toks[0].upper() == "COL"
                  or any(_GAP_RE.match(t) for t in toks)
-                 or _seg_count >= 2):
+                 or _seg_count >= 2
+                 or _lone_bare_word):
         frags: List[_ColFragment] = []
         pending_col: Optional[int] = None
         gap_before:  Optional[int] = None
@@ -834,8 +842,9 @@ def _resolve_dtl_names(fields: List[str]) -> Dict[str, str]:
 
 
 def _resolve_fragment_columns(
-    fragments: List[_ColFragment],
-    lookup:    Optional[Dict[str, Union[EZTField, EZTDefine]]],
+    fragments:     List[_ColFragment],
+    lookup:        Optional[Dict[str, Union[EZTField, EZTDefine]]],
+    heading_aware: bool = False,
 ) -> None:
     """Fill in `col` for chain-form fragments (col=None, gap_before set),
     mutating each fragment in place.
@@ -849,6 +858,11 @@ def _resolve_fragment_columns(
     field isn't in `lookup`) for a field reference.  Mixing COL-positioned
     and chain-form fragments on the same line works naturally: an explicit
     COL always wins, and chain fragments after it continue from there.
+
+    `heading_aware` sizes a field by _column_width instead of its raw data
+    width, so a column on a detail LINE leaves room for the heading printed
+    above it.  Fields on a TITLE or FOOTING are not columns and never get
+    this treatment.
     """
     cur = 1
     for frag in fragments:
@@ -861,7 +875,11 @@ def _resolve_fragment_columns(
             width = len(frag.text)
         else:
             fld = lookup.get(frag.field) if (lookup and frag.field) else None
-            width = _display_width(fld.type, fld.length, fld.decimals) if fld else 10
+            if heading_aware:
+                width = _column_width(frag.field or "", fld)
+            else:
+                width = (_display_width(fld.type, fld.length, fld.decimals)
+                         if fld else 10)
         cur += width
 
 
@@ -915,11 +933,12 @@ def _move_targets_comment(
 
 
 def _gen_positioned_line_block(
-    layout_name: str,
-    sub_prefix:  str,
-    fragments:   List[_ColFragment],
-    width:       int,
-    lookup:      Optional[Dict[str, Union[EZTField, EZTDefine]]] = None,
+    layout_name:   str,
+    sub_prefix:    str,
+    fragments:     List[_ColFragment],
+    width:         int,
+    lookup:        Optional[Dict[str, Union[EZTField, EZTDefine]]] = None,
+    heading_aware: bool = False,
 ) -> List[str]:
     """Emit a layout with literal text and/or field references at specific COLs.
 
@@ -930,7 +949,7 @@ def _gen_positioned_line_block(
     """
     if not fragments:
         return []
-    _resolve_fragment_columns(fragments, lookup)
+    _resolve_fragment_columns(fragments, lookup, heading_aware)
     sorted_frags = sorted(fragments, key=lambda f: f.col)
     # Each fragment can grow up to (next fragment's COL - 1) before clipping.
     max_widths: List[int] = []
@@ -973,7 +992,9 @@ def _gen_positioned_line_block(
             cur_col += text_len
         else:  # field reference
             fld = lookup.get(frag.field) if (lookup and frag.field) else None
-            natural = _display_width(fld.type, fld.length, fld.decimals) if fld else 10
+            natural = (_column_width(frag.field or "", fld) if heading_aware
+                       else (_display_width(fld.type, fld.length, fld.decimals)
+                             if fld else 10))
             col_w = min(natural, max_w, max(0, width - (cur_col - 1)))
             if col_w <= 0:
                 break
@@ -1096,6 +1117,12 @@ def _gen_line_block(
     if line.fragments:
         frags = _drop_unknown_bare_fields(line.fragments, lookup)
         if not frags:
+            # Nothing survived: the line was bare words naming no field.  A
+            # lone one is rendered as text, the way it was before unquoted
+            # words were read as field references.
+            if len(line.fragments) == 1 and line.fragments[0].field:
+                return _gen_text_line_block(
+                    layout_name, line.fragments[0].field, width)
             return []
         # Everything positional fell away — this was a plain centered line
         # with a trailing keyword, so render it the way it was before the
@@ -1105,7 +1132,8 @@ def _gen_line_block(
             return _gen_text_line_block(layout_name, frags[0].text, width)
         sub_prefix = f"WS-{rpt}-{_short_suffix(kind, line.line_num)}"
         body = _gen_positioned_line_block(
-            layout_name, sub_prefix, frags, width, lookup
+            layout_name, sub_prefix, frags, width, lookup,
+            heading_aware=(kind == "LINE"),
         )
         if kind == "LINE":
             # Columns are resolved by the call above, so the heading can be

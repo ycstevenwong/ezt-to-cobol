@@ -369,22 +369,69 @@ def test_line_directive_gets_a_heading_row():
     assert "CUSTOMER NAME" in _rendered(ws, "WS-R-LHD-01")
 
 
-def test_line_heading_is_clipped_to_its_column():
-    """Documented limitation: a LINE column is never widened for a heading.
+def test_line_column_widens_to_fit_its_heading():
+    """A heading longer than its field must print in full, not be clipped.
 
-    Widening would move the data, and a LINE's positions are either written
-    explicitly with COL or derived from the source's own spacing — so an
-    over-long heading is cut at the next column instead.  CUSTNO's heading
-    is 'ACCT NUM' (8) over a 5-character column, so only 'ACCT' survives.
-    (PRINT has no such constraint: _column_width widens there.)
+    'ACCT NUM' is 8 characters over CUSTNO's 5-character data width, so the
+    column grows to 8 — heading and data alike, or the two stop lining up.
+    A short field with a long heading (2-byte field headed 'REPORT') is the
+    case where clipping used to leave just 'RE'.
     """
     ws = gen_report_ws("R", "  LINE 01 CUSTNO CUSTNAME\n",
                        preamble=parse_preamble(HEADING_SRC))
+    assert "ACCT NUM" in _rendered(ws, "WS-R-LHD-01")
+    assert _subfield_width(ws, "WS-R-LINE-01", "WS-R-L01-CUSTNO") == 8
+
+
+def test_line_short_field_with_long_heading():
+    """The reported case: a 2-byte field headed 'REPORT' printed as 'RE'."""
+    pre = parse_preamble(
+        "FILE F DISK 80\nTEST-REPORT 1 2 N HEADING ('REPORT')\n")
+    ws = gen_report_ws("R", "  LINE 01 TEST-REPORT\n", preamble=pre)
+    assert "REPORT" in _rendered(ws, "WS-R-LHD-01")
+    assert _subfield_width(ws, "WS-R-LINE-01", "WS-R-L01-TEST-REPORT") == 6
+
+
+def test_lone_bare_field_is_a_field_not_text():
+    """One unquoted word on a LINE is a field; it used to print as its NAME.
+
+    The multi-segment rule needs two segments to fire, so a single bare word
+    fell through to the centered-text branch and the report printed the
+    literal 'TEST-REPORT' with no heading and no data.
+    """
+    pre = parse_preamble(
+        "FILE F DISK 80\nTEST-REPORT 1 2 N HEADING ('REPORT')\n")
+    ws = gen_report_ws("R", "  LINE 01 TEST-REPORT\n", preamble=pre)
+    body = _layout(ws, "WS-R-LINE-01")
+    assert any("WS-R-L01-TEST-REPORT" in line for line in body)   # a field...
+    assert not any("VALUE 'TEST-REPORT'" in line for line in body)  # ...not text
+    assert "REPORT" in _rendered(ws, "WS-R-LHD-01")
+
+
+def test_lone_bare_word_naming_no_field_stays_text():
+    """The fallback: an unquoted word matching no field renders as before."""
+    plain = parse_preamble("FILE F DISK 80\nX 1 3 A\n")
+    ws = gen_report_ws("R", "  TITLE 01 SOMEWORD\n", preamble=plain)
+    assert "SOMEWORD" in _rendered(ws, "WS-R-TITLE-01")
+
+
+def test_line_explicit_col_positions_survive_widening():
+    """Widening must never relocate a column the program placed by hand."""
+    ws = gen_report_ws("R", "  LINE 01 COL 5 CUSTNO COL 20 CUSTNAME\n",
+                       preamble=parse_preamble(HEADING_SRC))
     hdg = _rendered(ws, "WS-R-LHD-01")
-    assert hdg.startswith("ACCT ")            # clipped from 'ACCT NUM'
-    assert "ACCT NUM" not in hdg
-    # the data column itself is untouched at its declared width
-    assert _subfield_width(ws, "WS-R-LINE-01", "WS-R-L01-CUSTNO") == 5
+    line = _rendered(ws, "WS-R-LINE-01")
+    assert hdg.index("ACCT NUM") == 4          # COL 5 held
+    assert hdg.index("CUSTOMER NAME") == 19    # COL 20 held
+    assert line.index("?") == 4                # data still starts at COL 5
+
+
+def test_print_column_widths_are_unaffected_by_line_changes():
+    """PRINT sizing must not drift when LINE sizing changes."""
+    ws = gen_report_ws("R", "  PRINT CUSTNO CUSTNAME\n",
+                       preamble=parse_preamble(HEADING_SRC))
+    assert _subfield_width(ws, "WS-R-DTL", "WS-DTL-CUSTNO") == 8
+    assert "ACCT NUM" in _rendered(ws, "WS-R-HDG")
 
 
 def test_line_heading_aligns_with_the_data_columns():
