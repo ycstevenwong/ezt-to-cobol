@@ -1032,6 +1032,58 @@ def _drop_unknown_bare_fields(
             if not (_unmarked_bare_field(f) and f.field not in lookup)]
 
 
+def _gen_line_heading_blocks(
+    rpt:      str,
+    line:     _ReportLine,
+    frags:    List[_ColFragment],
+    width:    int,
+    lookup:   Optional[Dict[str, Union[EZTField, EZTDefine]]],
+) -> List[str]:
+    """Column-heading row(s) for the fields printed by a LINE directive.
+
+    A LINE names fields directly (LINE 01 CUSTNO CUSTNAME), so its columns
+    need labelling just as a PRINT list does — but the heading text has to
+    sit at the column each field actually occupies, not at the evenly
+    spaced positions _gen_hdg_block builds.  Each heading is therefore
+    emitted as a literal pinned to its field's resolved column.
+
+    Only produced when at least one field DECLARES a HEADING: without that
+    the report never had a heading row, and inventing one from field names
+    would add a line the source never asked for.  Once the row exists,
+    fields with no HEADING fall back to their name to keep it readable.
+
+    Nothing is widened.  A LINE's columns are either written explicitly
+    with COL or derived from the gaps in the source, and moving them to fit
+    a heading would silently relocate data the program placed deliberately;
+    an over-long heading is clipped at the next column instead.
+    """
+    field_frags = [f for f in frags if f.field]
+    if not field_frags or lookup is None:
+        return []
+    if not any(getattr(lookup.get(f.field), "heading", None) for f in field_frags):
+        return []
+
+    per_field = [_heading_rows(f.field, lookup.get(f.field)) for f in field_frags]
+    n_rows = max(len(rows) for rows in per_field)
+    aligned = [("",) * (n_rows - len(rows)) + rows for rows in per_field]
+
+    base = _numbered_name(f"WS-{rpt}-LHD", line.line_num)
+    out: List[str] = []
+    for row in range(n_rows):
+        texts = [
+            _ColFragment(col=frag.col, text=aligned[i][row])
+            for i, frag in enumerate(field_frags)
+            if aligned[i][row]
+        ]
+        if not texts:
+            continue
+        name = _safe_name(base if n_rows == 1 else f"{base}-{row + 1}")
+        out.extend(_gen_positioned_line_block(
+            name, f"WS-{rpt}-LH", texts, width, lookup
+        ))
+    return out
+
+
 def _gen_line_block(
     rpt:         str,
     kind:        str,
@@ -1052,9 +1104,14 @@ def _gen_line_block(
                 and frags[0].col is None and frags[0].gap_before is None:
             return _gen_text_line_block(layout_name, frags[0].text, width)
         sub_prefix = f"WS-{rpt}-{_short_suffix(kind, line.line_num)}"
-        return _gen_positioned_line_block(
+        body = _gen_positioned_line_block(
             layout_name, sub_prefix, frags, width, lookup
         )
+        if kind == "LINE":
+            # Columns are resolved by the call above, so the heading can be
+            # pinned to them.  Emitted first: it prints above the detail.
+            return _gen_line_heading_blocks(rpt, line, frags, width, lookup) + body
+        return body
     return _gen_text_line_block(layout_name, line.text, width)
 
 

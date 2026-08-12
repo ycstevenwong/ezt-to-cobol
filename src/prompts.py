@@ -143,6 +143,21 @@ WS-<RPT>-HDG.  Write every row that exists, in numeric order, one line
 apart -- they are one heading split over several lines, and skipping any
 of them leaves the report's columns unlabelled.
 
+A LINE directive that names fields gets the same treatment under the name
+WS-<RPT>-LHD-NN (matching its WS-<RPT>-LINE-NN), again suffixed -1, -2 ...
+when the heading stacks.  These label the columns of that LINE, so print
+them ONCE per page in the headings paragraph -- after the title, before
+any detail -- never once per record:
+
+       <RPT>-HEADINGS.
+           WRITE <OUT>-REC FROM WS-<RPT>-TITLE-01 AFTER ADVANCING PAGE
+           WRITE <OUT>-REC FROM WS-<RPT>-LHD-01-1 AFTER ADVANCING 2 LINES
+           WRITE <OUT>-REC FROM WS-<RPT>-LHD-01-2 AFTER ADVANCING 1 LINE.
+
+       <RPT>-DETAIL.
+           [MOVE the fields, then]
+           WRITE <OUT>-REC FROM WS-<RPT>-LINE-01 AFTER ADVANCING 1 LINE.
+
 Every layout holding field subfields -- the detail line (WS-<RPT>-DTL)
 and any TITLE/HEADING/LINE/FOOTING carrying field references -- is
 preceded by a comment block naming its MOVE targets:

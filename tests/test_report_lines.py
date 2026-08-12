@@ -359,6 +359,77 @@ def test_explicit_heading_directive_still_wins():
     assert "WS-R-HDG" not in names
 
 
+# ── LINE directives get column headings too, not just PRINT ──────────────
+
+def test_line_directive_gets_a_heading_row():
+    """A LINE naming fields needs its columns labelled, same as PRINT."""
+    ws = gen_report_ws("R", "  LINE 01 CUSTNO CUSTNAME\n",
+                       preamble=parse_preamble(HEADING_SRC))
+    assert "WS-R-LHD-01" in _layout_names(ws)
+    assert "CUSTOMER NAME" in _rendered(ws, "WS-R-LHD-01")
+
+
+def test_line_heading_is_clipped_to_its_column():
+    """Documented limitation: a LINE column is never widened for a heading.
+
+    Widening would move the data, and a LINE's positions are either written
+    explicitly with COL or derived from the source's own spacing — so an
+    over-long heading is cut at the next column instead.  CUSTNO's heading
+    is 'ACCT NUM' (8) over a 5-character column, so only 'ACCT' survives.
+    (PRINT has no such constraint: _column_width widens there.)
+    """
+    ws = gen_report_ws("R", "  LINE 01 CUSTNO CUSTNAME\n",
+                       preamble=parse_preamble(HEADING_SRC))
+    hdg = _rendered(ws, "WS-R-LHD-01")
+    assert hdg.startswith("ACCT ")            # clipped from 'ACCT NUM'
+    assert "ACCT NUM" not in hdg
+    # the data column itself is untouched at its declared width
+    assert _subfield_width(ws, "WS-R-LINE-01", "WS-R-L01-CUSTNO") == 5
+
+
+def test_line_heading_aligns_with_the_data_columns():
+    """The heading must sit over the column it labels, at the same offset."""
+    ws = gen_report_ws("R", "  LINE 01 COL 5 CUSTNO COL 20 CUSTNAME\n",
+                       preamble=parse_preamble(HEADING_SRC))
+    hdg = _rendered(ws, "WS-R-LHD-01")
+    line = _rendered(ws, "WS-R-LINE-01")
+    assert hdg.index("ACCT NUM") == 4            # COL 5 -> index 4
+    assert hdg.index("CUSTOMER NAME") == 19      # COL 20 -> index 19
+    assert line.index("?") == 4                  # data starts in the same place
+
+
+def test_line_heading_stacks_over_multiple_rows():
+    ws = gen_report_ws("R", "  LINE 01 CUSTNO CUSTNAME\n",
+                       preamble=parse_preamble(STACKED_SRC))
+    assert "WS-R-LHD-01-1" in _layout_names(ws)
+    assert "WS-R-LHD-01-2" in _layout_names(ws)
+    assert "ACCT" in _rendered(ws, "WS-R-LHD-01-1")
+    assert "NUM" in _rendered(ws, "WS-R-LHD-01-2")
+    # single-row heading bottom-aligns against the data
+    assert "CUSTOMER NAME" in _rendered(ws, "WS-R-LHD-01-2")
+
+
+def test_line_without_declared_headings_gets_no_heading_row():
+    """No HEADING declared -> the report never had a heading row; don't invent one."""
+    plain = parse_preamble("FILE F DISK 80\nCUSTNO 1 5 N\nCUSTNAME 6 30 A\n")
+    ws = gen_report_ws("R", "  LINE 01 CUSTNO CUSTNAME\n", preamble=plain)
+    assert not any(n.startswith("WS-R-LHD") for n in _layout_names(ws))
+
+
+def test_title_with_a_field_gets_no_heading_row():
+    """Only LINE labels columns; a field on a TITLE is not a column."""
+    ws = gen_report_ws("R", "  TITLE 01 'AS OF ' CUSTNO\n",
+                       preamble=parse_preamble(HEADING_SRC))
+    assert not any(n.startswith("WS-R-LHD") for n in _layout_names(ws))
+
+
+def test_line_heading_rows_fill_the_page_width():
+    ws = gen_report_ws("R", "  LINE 01 CUSTNO CUSTNAME\n",
+                       preamble=parse_preamble(STACKED_SRC))
+    for name in ("WS-R-LHD-01-1", "WS-R-LHD-01-2", "WS-R-LINE-01"):
+        assert _width(ws, name) == _DEFAULT_PRINT_WIDTH, name
+
+
 # ── MOVE-targets comment block ───────────────────────────────────────────
 
 def test_move_targets_emitted_for_detail_line():
