@@ -1062,6 +1062,36 @@ _LEFT_MARGIN = 1   # spaces before the first column on a detail/heading line
 _COL_GAP     = 2   # spaces between adjacent columns
 
 
+def _heading_rows(fname: str,
+                  fld: Optional[Union[EZTField, EZTDefine]]) -> Tuple[str, ...]:
+    """Column-heading row(s) for one printed field.
+
+    A HEADING declared on the field definition wins, and may span several
+    rows (HEADING ('ACCT' 'NUM')).  With none declared the field name is
+    used as the heading, exactly as before.
+    """
+    declared = getattr(fld, "heading", None) if fld is not None else None
+    return tuple(declared) if declared else (fname,)
+
+
+def _column_width(fname: str,
+                  fld: Optional[Union[EZTField, EZTDefine]]) -> int:
+    """Print width of one report column, shared by the heading and detail rows.
+
+    A DECLARED heading widens the column to fit — EZT sizes the column to
+    its heading rather than clipping it, and the heading has to line up
+    with the data underneath.  A name-derived heading does not widen
+    anything: it is still clipped to the data width, so programs that never
+    use HEADING keep byte-identical layouts.
+    """
+    natural = (_display_width(fld.type, fld.length, fld.decimals)
+               if fld is not None else 10)
+    declared = getattr(fld, "heading", None) if fld is not None else None
+    if not declared:
+        return natural
+    return max(natural, max(len(row) for row in declared))
+
+
 def _gen_dtl_block(rpt: str, fields: List[str],
                    lookup: Dict[str, Union[EZTField, EZTDefine]],
                    width: int) -> List[str]:
@@ -1081,10 +1111,7 @@ def _gen_dtl_block(rpt: str, fields: List[str],
             items.append(("FILLER", f"PIC X({_COL_GAP})", "VALUE SPACES"))
             used += _COL_GAP
         fld = lookup.get(fname.upper())
-        if fld is not None:
-            col_w = _display_width(fld.type, fld.length, fld.decimals)
-        else:
-            col_w = 10
+        col_w = _column_width(fname, fld)
         sub_name = name_map[fname]
         items.append((sub_name, f"PIC X({col_w})", ""))
         move_pairs.append((fname.upper(), sub_name))
@@ -1100,27 +1127,53 @@ def _gen_dtl_block(rpt: str, fields: List[str],
 def _gen_hdg_block(rpt: str, fields: List[str],
                    lookup: Dict[str, Union[EZTField, EZTDefine]],
                    width: int) -> List[str]:
-    """Column-heading layout — uses PRINT field names as the header text."""
+    """Column-heading layout(s) for the PRINT field list.
+
+    Heading text comes from each field's declared HEADING, falling back to
+    the field name.  A HEADING may stack over several rows, so one layout
+    is emitted per row: WS-<RPT>-HDG on its own when a single row covers
+    every column, else WS-<RPT>-HDG-1 .. -N printed top to bottom.
+
+    Shorter headings are bottom-aligned — padded at the TOP — so every
+    column's last heading row sits directly above the detail line, which is
+    how a stacked heading is meant to read:
+
+        ACCT                       <- HDG-1
+        NUM       CUSTOMER NAME    <- HDG-2, flush against the data
+        12345     ACME LTD         <- DTL
+    """
     if not fields:
         return []
-    items: List[Tuple[str, str, str]] = []
-    used = 0
-    if _LEFT_MARGIN:
-        items.append(("FILLER", f"PIC X({_LEFT_MARGIN})", "VALUE SPACES"))
-        used += _LEFT_MARGIN
-    for i, fname in enumerate(fields):
-        if i > 0:
-            items.append(("FILLER", f"PIC X({_COL_GAP})", "VALUE SPACES"))
-            used += _COL_GAP
-        fld = lookup.get(fname.upper())
-        col_w = _display_width(fld.type, fld.length, fld.decimals) if fld else 10
-        header = fname[:col_w].ljust(col_w).replace("'", "''")
-        items.append(("FILLER", f"PIC X({col_w})", f"VALUE '{header}'"))
-        used += col_w
-    trailing = width - used
-    if trailing > 0:
-        items.append(("FILLER", f"PIC X({trailing})", "VALUE SPACES"))
-    return _layout_block(f"WS-{rpt}-HDG", items)
+    per_field = [_heading_rows(f, lookup.get(f.upper())) for f in fields]
+    n_rows = max(len(rows) for rows in per_field)
+    # Pad at the front so the final row of every column lines up.
+    aligned = [("",) * (n_rows - len(rows)) + rows for rows in per_field]
+
+    out: List[str] = []
+    for row in range(n_rows):
+        items: List[Tuple[str, str, str]] = []
+        used = 0
+        if _LEFT_MARGIN:
+            items.append(("FILLER", f"PIC X({_LEFT_MARGIN})", "VALUE SPACES"))
+            used += _LEFT_MARGIN
+        for i, fname in enumerate(fields):
+            if i > 0:
+                items.append(("FILLER", f"PIC X({_COL_GAP})", "VALUE SPACES"))
+                used += _COL_GAP
+            col_w = _column_width(fname, lookup.get(fname.upper()))
+            text = aligned[i][row][:col_w]
+            if text.strip():
+                escaped = text.ljust(col_w).replace("'", "''")
+                items.append(("FILLER", f"PIC X({col_w})", f"VALUE '{escaped}'"))
+            else:
+                items.append(("FILLER", f"PIC X({col_w})", "VALUE SPACES"))
+            used += col_w
+        trailing = width - used
+        if trailing > 0:
+            items.append(("FILLER", f"PIC X({trailing})", "VALUE SPACES"))
+        name = f"WS-{rpt}-HDG" if n_rows == 1 else f"WS-{rpt}-HDG-{row + 1}"
+        out.extend(_layout_block(name, items))
+    return out
 
 
 # ── REPORT WORKING-STORAGE generator ───────────────────────────────────────────

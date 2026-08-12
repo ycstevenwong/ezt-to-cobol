@@ -92,6 +92,20 @@ def _width(ws_text, name):
                if (m := re.search(r"PIC X\((\d+)\)", line)))
 
 
+def _subfield_width(ws_text, layout, subfield):
+    """PIC X(n) width of one named 05 item — the precise column size.
+
+    Comparing rendered '?' runs is not enough: a wide neighbouring column
+    contains any shorter run you might look for, so an assertion like
+    "'?'*8 in detail" passes even when the column never widened.
+    """
+    for line in _layout(ws_text, layout):
+        m = re.match(rf"\s+05\s+{re.escape(subfield)}\s+PIC X\((\d+)\)", line)
+        if m:
+            return int(m.group(1))
+    raise AssertionError(f"{subfield!r} not found in {layout!r}")
+
+
 def _rendered(ws_text, name):
     """The printed line: literals inline, runtime fields as '?'."""
     out = ""
@@ -251,6 +265,98 @@ def test_marked_unknown_field_is_still_trusted():
     """COL/+N are explicit enough to accept a name the preamble lacks."""
     ws = _ws("  TITLE 01 COL 10 'ACCT' +5 NOSUCHFLD\n")
     assert "?" in _rendered(ws, "WS-R-TITLE-01")
+
+
+# ── field-level HEADING becomes the column heading ───────────────────────
+
+HEADING_SRC = """\
+FILE CUSTFILE DISK 80
+CUSTNO    1   5   N  HEADING ('ACCT NUM')
+CUSTNAME  6  30   A  HEADING ('CUSTOMER NAME')
+"""
+
+STACKED_SRC = """\
+FILE CUSTFILE DISK 80
+CUSTNO    1   5   N  HEADING ('ACCT' 'NUM')
+CUSTNAME  6  30   A  HEADING ('CUSTOMER NAME')
+"""
+
+
+def test_heading_attribute_parses_single_row():
+    fld = parse_preamble(HEADING_SRC).files[0].fields[0]
+    assert fld.heading == ("ACCT NUM",)
+
+
+def test_heading_attribute_parses_stacked_rows():
+    """The inner quotes matter: this used to collapse to  ACCT' 'NUM."""
+    fld = parse_preamble(STACKED_SRC).files[0].fields[0]
+    assert fld.heading == ("ACCT", "NUM")
+
+
+def test_heading_attribute_parses_bare_quoted_form():
+    fld = parse_preamble("FILE F DISK 80\nX 1 3 A HEADING 'TC'\n").files[0].fields[0]
+    assert fld.heading == ("TC",)
+
+
+def test_declared_heading_is_used_as_column_text():
+    ws = gen_report_ws("R", "  PRINT CUSTNO CUSTNAME\n",
+                       preamble=parse_preamble(HEADING_SRC))
+    assert "ACCT NUM" in _rendered(ws, "WS-R-HDG")
+    assert "CUSTOMER NAME" in _rendered(ws, "WS-R-HDG")
+
+
+def test_declared_heading_widens_column_and_detail_together():
+    """Heading and data must stay aligned, so both rows widen by the same
+    amount — otherwise every column after this one is off by the shortfall."""
+    ws = gen_report_ws("R", "  PRINT CUSTNO CUSTNAME\n",
+                       preamble=parse_preamble(HEADING_SRC))
+    # 'ACCT NUM' is 8 chars against CUSTNO's 5-char data width.
+    assert _subfield_width(ws, "WS-R-DTL", "WS-DTL-CUSTNO") == 8
+    hdg = _rendered(ws, "WS-R-HDG")
+    dtl = _rendered(ws, "WS-R-DTL")
+    assert hdg.index("ACCT NUM") == dtl.index("?")             # same start column
+    assert hdg.index("CUSTOMER NAME") == dtl.index("?" * 30)   # and the next one
+
+
+def test_field_name_heading_does_not_widen_anything():
+    """With no HEADING declared the layout must be byte-identical to before."""
+    plain = parse_preamble("FILE F DISK 80\nCUSTNO 1 5 N\nCUSTNAME 6 30 A\n")
+    ws = gen_report_ws("R", "  PRINT CUSTNO CUSTNAME\n", preamble=plain)
+    assert _rendered(ws, "WS-R-HDG").startswith(" CUSTN  ")     # clipped to 5
+    assert _width(ws, "WS-R-DTL") == _DEFAULT_PRINT_WIDTH
+
+
+def test_stacked_heading_emits_one_layout_per_row():
+    ws = gen_report_ws("R", "  PRINT CUSTNO CUSTNAME\n",
+                       preamble=parse_preamble(STACKED_SRC))
+    assert "WS-R-HDG-1" in _layout_names(ws)
+    assert "WS-R-HDG-2" in _layout_names(ws)
+    assert "ACCT" in _rendered(ws, "WS-R-HDG-1")
+    assert "NUM" in _rendered(ws, "WS-R-HDG-2")
+
+
+def test_stacked_heading_is_bottom_aligned():
+    """A one-row heading sits on the LAST row, next to the data it labels."""
+    ws = gen_report_ws("R", "  PRINT CUSTNO CUSTNAME\n",
+                       preamble=parse_preamble(STACKED_SRC))
+    assert "CUSTOMER NAME" not in _rendered(ws, "WS-R-HDG-1")
+    assert "CUSTOMER NAME" in _rendered(ws, "WS-R-HDG-2")
+
+
+def test_stacked_heading_rows_all_fill_the_page_width():
+    ws = gen_report_ws("R", "  PRINT CUSTNO CUSTNAME\n",
+                       preamble=parse_preamble(STACKED_SRC))
+    for name in ("WS-R-HDG-1", "WS-R-HDG-2", "WS-R-DTL"):
+        assert _width(ws, name) == _DEFAULT_PRINT_WIDTH, name
+
+
+def test_explicit_heading_directive_still_wins():
+    """An explicit HEADING line suppresses the auto column row entirely."""
+    ws = gen_report_ws("R", "  HEADING 01 'MINE'\n  PRINT CUSTNO\n",
+                       preamble=parse_preamble(HEADING_SRC))
+    names = _layout_names(ws)
+    assert "WS-R-HDG-01" in names
+    assert "WS-R-HDG" not in names
 
 
 # ── MOVE-targets comment block ───────────────────────────────────────────

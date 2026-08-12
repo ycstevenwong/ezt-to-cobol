@@ -13,7 +13,9 @@ class EZTField:
     type: str         # N, A, P, B
     decimals: int = 0
     occurs: int = 0   # 0 = no OCCURS clause
-    heading: Optional[str] = None
+    # Column-heading rows declared with HEADING; several entries mean the
+    # heading is stacked over that many print rows.  None when not declared.
+    heading: Optional[Tuple[str, ...]] = None
 
     @property
     def physical_bytes(self) -> int:
@@ -143,15 +145,26 @@ def _normalise_org(org: str) -> str:
     return _ORG_ALIASES.get(org.upper(), org.upper())
 
 
-def _parse_heading_value(tokens: List[str], i: int) -> Tuple[str, int]:
+_QUOTED_SEG_RE = re.compile(r"'([^']*)'|\"([^\"]*)\"")
+
+
+def _parse_heading_value(tokens: List[str], i: int) -> Tuple[Tuple[str, ...], int]:
     """Parse the text after the HEADING keyword.
 
-    Handles both parenthesised form  HEADING ('ACCT NUM')
-    and bare quoted form             HEADING 'TC'
-    Returns (heading_text, next_token_index).
+    Returns (heading_lines, next_token_index).  A heading is a TUPLE because
+    EZT stacks several quoted strings to print a column heading over more
+    than one row:
+
+        HEADING 'TC'                -> ('TC',)
+        HEADING ('ACCT NUM')        -> ('ACCT NUM',)      one row
+        HEADING ('ACCT' 'NUM')      -> ('ACCT', 'NUM')    two stacked rows
+
+    The whole-string strip this used to do turned the stacked form into the
+    single line  ACCT' 'NUM  — the inner quotes have to be honoured, so the
+    parenthesised content is split on its quoted segments instead.
     """
     if i >= len(tokens):
-        return "", i
+        return (), i
     tok = tokens[i]
     if tok.startswith("("):
         # Collect tokens until the one containing the closing )
@@ -162,11 +175,14 @@ def _parse_heading_value(tokens: List[str], i: int) -> Tuple[str, int]:
                 i += 1
                 break
             i += 1
-        raw = " ".join(parts).lstrip("(").rstrip(")")
+        raw = " ".join(parts).strip().lstrip("(").rstrip(")").strip()
     else:
         raw = tok
         i += 1
-    return raw.strip().strip("'\"").strip(), i
+    segments = [(a or b) for a, b in _QUOTED_SEG_RE.findall(raw)]
+    if not segments:                      # unquoted single word
+        segments = [raw.strip().strip("'\"").strip()]
+    return tuple(s for s in segments if s != ""), i
 
 
 def _parse_optional_attrs(tokens: List[str], start_idx: int):

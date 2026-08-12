@@ -136,6 +136,13 @@ Per-report items already in WS:
   WS-<RPT>-DTL with WS-DTL-<FLD> subfields  (from PRINT field list)
   WS-<CTRL>-SAVE                       (from CONTROL <field>)
 
+The column-heading row derived from the PRINT list is WS-<RPT>-HDG.  When
+a field declares a stacked HEADING the heading needs more than one printed
+row, and you get WS-<RPT>-HDG-1, WS-<RPT>-HDG-2, ... instead of a single
+WS-<RPT>-HDG.  Write every row that exists, in numeric order, one line
+apart -- they are one heading split over several lines, and skipping any
+of them leaves the report's columns unlabelled.
+
 Every layout holding field subfields -- the detail line (WS-<RPT>-DTL)
 and any TITLE/HEADING/LINE/FOOTING carrying field references -- is
 preceded by a comment block naming its MOVE targets:
